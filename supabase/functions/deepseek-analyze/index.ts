@@ -16,7 +16,7 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS'
 };
 
-type AnalysisAction = 'daily-summary' | 'cost-analysis';
+type AnalysisAction = 'daily-summary' | 'cost-analysis' | 'food-image';
 
 function jsonResponse(body: Record<string, unknown>, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -27,6 +27,37 @@ function jsonResponse(body: Record<string, unknown>, status = 200) {
 
 function buildMessages(action: AnalysisAction, data: unknown) {
   const context = JSON.stringify(data ?? {}).slice(0, 16000);
+
+  if (action === 'food-image') {
+    const imageDataUrl = String((data as { imageDataUrl?: string } | null)?.imageDataUrl || '');
+    return [
+      {
+        role: 'system',
+        content: [
+          '你是食物照片热量估算助手。',
+          '只根据图片内容估算，不确定时降低置信度，不得编造品牌或精确成分。',
+          '只返回合法 JSON，不要使用 Markdown 代码块。',
+          'JSON 格式：{"foods":[{"name":"食物名称","portion":"预估分量","kcal":数字}],"totalKcal":数字,"proteinG":数字,"carbsG":数字,"fatG":数字,"description":"简短说明"}'
+        ].join('')
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: '请识别这张食物照片，估算每种食物及总热量。若画面中没有明显食物，foods 返回空数组并说明原因。'
+          },
+          {
+            type: 'image_url',
+            image_url: {
+              url: imageDataUrl,
+              detail: 'low'
+            }
+          }
+        ]
+      }
+    ];
+  }
 
   if (action === 'cost-analysis') {
     return [
@@ -106,7 +137,11 @@ Deno.serve(async (request) => {
     return jsonResponse({ error: 'Invalid JSON body' }, 400);
   }
 
-  const action = body.action === 'cost-analysis' ? 'cost-analysis' : 'daily-summary';
+  const action: AnalysisAction = body.action === 'cost-analysis'
+    ? 'cost-analysis'
+    : body.action === 'food-image'
+      ? 'food-image'
+      : 'daily-summary';
   const requestId = crypto.randomUUID();
 
   try {
@@ -122,7 +157,8 @@ Deno.serve(async (request) => {
         thinking: { type: 'disabled' },
         temperature: action === 'cost-analysis' ? 0.35 : 0.4,
         max_tokens: 1200,
-        stream: false
+        stream: false,
+        ...(action === 'food-image' ? { response_format: { type: 'json_object' } } : {})
       })
     });
 
