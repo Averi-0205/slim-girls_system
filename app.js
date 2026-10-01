@@ -58,6 +58,10 @@ function createDefaultState() {
       water: {},
       diary: [],
       body: [],
+      ai: {
+        daily: null,
+        cost: {}
+      },
       profile: {
         height: 165,
         currentWeight: null,
@@ -177,6 +181,29 @@ function normalizeState(raw) {
     : {};
 
   const latestWeight = weight.length ? weight[weight.length - 1].value : null;
+  const ai = sourceDb.ai && typeof sourceDb.ai === 'object'
+    ? {
+        daily: sourceDb.ai.daily && typeof sourceDb.ai.daily === 'object'
+          ? {
+              text: String(sourceDb.ai.daily.text || ''),
+              signature: String(sourceDb.ai.daily.signature || ''),
+              generatedAt: sourceDb.ai.daily.generatedAt || null
+            }
+          : null,
+        cost: sourceDb.ai.cost && typeof sourceDb.ai.cost === 'object'
+          ? Object.fromEntries(
+              Object.entries(sourceDb.ai.cost).map(([period, item]) => [
+                period,
+                {
+                  text: String(item?.text || ''),
+                  signature: String(item?.signature || ''),
+                  generatedAt: item?.generatedAt || null
+                }
+              ])
+            )
+          : {}
+      }
+    : defaults.db.ai;
   const profile = {
     ...defaults.db.profile,
     ...sourceProfile,
@@ -198,7 +225,7 @@ function normalizeState(raw) {
     cur: Math.max(0, finiteNumber(item?.cur, 0))
   }));
 
-  return { db: { ...defaults.db, food, bills, exe, weight, habits, water, diary, body, profile }, milestones };
+  return { db: { ...defaults.db, food, bills, exe, weight, habits, water, diary, body, ai, profile }, milestones };
 }
 
 function getTodayFood() {
@@ -626,6 +653,148 @@ function saveDiary() {
   toast('日记已保存到云端 ✨');
 }
 
+function aiSignature(value) {
+  const text = JSON.stringify(value);
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function formatAiText(text) {
+  return escapeHtml(text).replace(/\n/g, '<br>');
+}
+
+function buildDailyAIData() {
+  const metrics = getMetrics();
+  const habits = DB.habits[todayKey()] || [];
+  return {
+    date: todayKey(),
+    metrics: {
+      bmr: metrics.bmr,
+      tdee: metrics.tdee,
+      deficitGoal: metrics.deficit,
+      intakeTarget: metrics.intakeTarget
+    },
+    food: getTodayFood().map((item) => ({ name: item.name, kcal: item.kcal, cost: item.cost })),
+    exercise: getTodayExercise().map((item) => ({ name: item.name, kcal: item.kcal })),
+    waterMl: finiteNumber(DB.water[todayKey()], 0),
+    habits: HABITS
+      .map((habit, index) => habits.includes(index) ? habit[1] : null)
+      .filter(Boolean),
+    latestWeight: DB.weight.length ? DB.weight[DB.weight.length - 1] : null,
+    profile: {
+      height: DB.profile.height,
+      targetWeight: DB.profile.targetWeight,
+      targetDate: DB.profile.targetDate
+    }
+  };
+}
+
+function buildCostAIData(data = buildCostData(currentCostPeriod)) {
+  return {
+    period: currentCostPeriod,
+    labels: data.labels,
+    weights: data.rawWeights,
+    costs: data.costs,
+    totalCost: data.totalCost,
+    weightChange: data.weightChange,
+    costPerKgLost: data.unitCost
+  };
+}
+
+async function callDeepSeekAnalyze(action, data) {
+  if (!supabaseClient || !currentUser) throw new Error('请先登录后使用 AI 分析');
+
+  const { data: result, error } = await supabaseClient.functions.invoke('deepseek-analyze', {
+    body: { action, data }
+  });
+
+  if (error) {
+    let message = error.message || 'DeepSeek 请求失败';
+    try {
+      const details = await error.context?.json();
+      if (details?.error) message = details.error;
+    } catch {
+      // Keep the client error when the function response is not JSON.
+    }
+    if (message.includes('DEEPSEEK_API_KEY')) message = 'Supabase 尚未配置 DeepSeek API Key';
+    throw new Error(message);
+  }
+  if (result?.error) throw new Error(result.error);
+  if (!result?.text) throw new Error('DeepSeek 没有返回分析内容');
+  return result;
+}
+
+async function generateDailyAI() {
+  const button = document.getElementById('dailyAiBtn');
+  const element = document.getElementById('aiSummary');
+  const payload = buildDailyAIData();
+  if (button) {
+    button.disabled = true;
+    button.textContent = '分析中…';
+  }
+  if (element) element.innerHTML = 'DeepSeek 正在分析今日记录，请稍候…';
+
+  try {
+    const result = await callDeepSeekAnalyze('daily-summary', payload);
+    DB.ai.daily = {
+      text: result.text,
+      signature: aiSignature(payload),
+      generatedAt: new Date().toISOString()
+    };
+    saveDB();
+    renderDashboard();
+    toast('AI 今日小结已更新');
+  } catch (error) {
+    console.error('DeepSeek daily summary failed', error);
+    renderDashboard();
+    toast(`AI 分析失败：${error.message}`);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '重新生成';
+    }
+  }
+}
+
+async function generateCostAI() {
+  const button = document.getElementById('costAiBtn');
+  const status = document.getElementById('aiCostStatus');
+  const element = document.getElementById('aiCost');
+  const data = buildCostData(currentCostPeriod);
+  const payload = buildCostAIData(data);
+  if (button) {
+    button.disabled = true;
+    button.textContent = '分析中…';
+  }
+  if (status) status.textContent = 'DeepSeek 分析中';
+  if (element) element.innerHTML = 'DeepSeek 正在分析当前周期数据，请稍候…';
+
+  try {
+    const result = await callDeepSeekAnalyze('cost-analysis', payload);
+    DB.ai.cost[currentCostPeriod] = {
+      text: result.text,
+      signature: aiSignature(payload),
+      generatedAt: new Date().toISOString()
+    };
+    saveDB();
+    renderAiCost(data);
+    toast('消费关联分析已更新');
+  } catch (error) {
+    console.error('DeepSeek cost analysis failed', error);
+    renderAiCost(data);
+    toast(`AI 分析失败：${error.message}`);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '重新分析';
+    }
+  }
+}
+
 function renderDashboard() {
   const foodCalories = getTodayFood().reduce((sum, item) => sum + item.kcal, 0);
   const exerciseCalories = getTodayExercise().reduce((sum, item) => sum + item.kcal, 0);
@@ -639,6 +808,12 @@ function renderDashboard() {
   setRing('ringGap', 'ringGapText', deficit, gapTarget);
 
   const element = document.getElementById('aiSummary');
+  const payload = buildDailyAIData();
+  const cached = DB.ai.daily;
+  if (cached?.text && cached.signature === aiSignature(payload)) {
+    element.innerHTML = formatAiText(cached.text);
+    return;
+  }
   if (!foodCalories && !exerciseCalories) {
     element.innerHTML = '今天还没有记录。添加饮食和运动后，这里会实时汇总你的热量数据。';
     return;
@@ -1114,6 +1289,15 @@ function drawDual() {
 function renderAiCost(data = buildCostData(currentCostPeriod)) {
   const element = document.getElementById('aiCost');
   if (!element) return;
+  const status = document.getElementById('aiCostStatus');
+  const payload = buildCostAIData(data);
+  const cached = DB.ai.cost?.[currentCostPeriod];
+  if (cached?.text && cached.signature === aiSignature(payload)) {
+    if (status) status.textContent = 'DeepSeek 已分析';
+    element.innerHTML = formatAiText(cached.text);
+    return;
+  }
+  if (status) status.textContent = '基于当前记录';
   if (!data.hasWeights && data.totalCost === 0) {
     element.innerHTML = '当前周期还没有体重和饮食消费记录。添加记录后，这里会显示真实汇总。';
     return;
