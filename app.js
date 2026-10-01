@@ -44,11 +44,14 @@ let syncTimer = null;
 let syncBusy = false;
 let syncAgain = false;
 let toastTimer = null;
+let pendingBills = [];
+let currentCostPeriod = 'w';
 
 function createDefaultState() {
   return {
     db: {
       food: [],
+      bills: [],
       exe: [],
       weight: [],
       habits: {},
@@ -107,7 +110,15 @@ function normalizeState(raw) {
     name: String(item?.name || '饮食记录'),
     sub: String(item?.sub || '手动添加'),
     kcal: Math.max(0, Math.round(finiteNumber(item?.kcal, 0))),
+    cost: Math.max(0, finiteNumber(item?.cost, 0)),
     date: /^\d{4}-\d{2}-\d{2}$/.test(item?.date || '') ? item.date : todayKey()
+  }));
+
+  const bills = (Array.isArray(sourceDb.bills) ? sourceDb.bills : []).map((item) => ({
+    date: String(item?.date || ''),
+    name: String(item?.name || '餐饮消费'),
+    kcost: Math.max(0, finiteNumber(item?.kcost, 0)),
+    src: String(item?.src || '导入')
   }));
 
   const exe = (Array.isArray(sourceDb.exe) ? sourceDb.exe : []).map((item) => ({
@@ -187,7 +198,7 @@ function normalizeState(raw) {
     cur: Math.max(0, finiteNumber(item?.cur, 0))
   }));
 
-  return { db: { ...defaults.db, food, exe, weight, habits, water, diary, body, profile }, milestones };
+  return { db: { ...defaults.db, food, bills, exe, weight, habits, water, diary, body, profile }, milestones };
 }
 
 function getTodayFood() {
@@ -318,14 +329,17 @@ function renderFood() {
     return;
   }
 
+  const totalCost = rows.reduce((sum, { item }) => sum + finiteNumber(item.cost, 0), 0);
   element.innerHTML = rows.map(({ item, index }) => `
     <div class="item">
       <div class="icon" style="background:${safeColor(item.bg)}">${escapeHtml(item.icon)}</div>
       <div class="info"><b>${escapeHtml(item.name)}</b><span>${escapeHtml(item.sub)}</span></div>
-      <div class="right">${item.kcal}<span>kcal</span></div>
+      <div class="right">${item.kcal}<span>kcal · ¥${finiteNumber(item.cost, 0).toFixed(1)}</span></div>
       <button class="btn ghost small" onclick="delFood(${index})">✕</button>
     </div>
-  `).join('');
+  `).join('') + (totalCost > 0
+    ? `<div class="stat-row" style="margin-top:6px"><span>今日餐饮花费</span><span style="font-weight:700;color:var(--accent)">¥ ${totalCost.toFixed(2)}</span></div>`
+    : '');
 }
 
 function renderExe() {
@@ -389,6 +403,7 @@ function pickFood(index) {
     name: food[0],
     sub: '手动添加',
     kcal: food[1],
+    cost: Math.max(0, finiteNumber(document.getElementById('foodCost')?.value, 0)),
     date: todayKey()
   });
   saveDB();
@@ -405,6 +420,7 @@ function addFoodAI() {
     name: 'AI识别 · 鸡胸沙拉+糙米饭',
     sub: '拍照识别 · 420g · 蛋白35g',
     kcal: 480,
+    cost: 28,
     date: todayKey()
   });
   saveDB();
@@ -468,6 +484,7 @@ function saveWeight() {
   renderWeight();
   renderProfile();
   renderDashboard();
+  drawDual();
   closeAll();
   toast('体重已保存到云端 ⚖️');
 }
@@ -780,8 +797,346 @@ function addMilestone() {
   toast('里程碑已创建并同步 🏆');
 }
 
+function parseCsv(text) {
+  const lines = String(text || '').split(/\r?\n/).filter((line) => line.trim());
+  if (!lines.length) return null;
+
+  const header = lines[0];
+  const isAlipay = header.includes('交易分类');
+  const isWechat = header.includes('商品') && header.includes('收/支');
+  if (!isAlipay && !isWechat) return null;
+
+  const rows = [];
+  for (const line of lines.slice(1)) {
+    const columns = line.split(',').map((value) => value.trim().replace(/^"|"$/g, ''));
+    if (isAlipay) {
+      const time = columns[2] || columns[3];
+      const item = columns[8];
+      const amount = columns[9];
+      const direction = columns[10];
+      const status = columns[11];
+      const category = columns[12];
+      if (direction !== '支出' || String(status || '').includes('退款')) continue;
+      if (!String(category || '').match(/餐饮|美食|食品/)) continue;
+      rows.push({
+        date: String(time || '').slice(5, 10),
+        name: item,
+        kcost: parseFloat(amount) || 0,
+        src: 'CSV'
+      });
+    } else {
+      const time = columns[0];
+      const item = columns[3];
+      const direction = columns[4];
+      const amount = columns[5];
+      const status = columns[7];
+      if (direction !== '支出' || status !== '支付成功') continue;
+      if (!String(item || '').match(/餐|饭|面|粉|奶茶|咖啡|小吃|超市|便利|菜|肉|水果|外卖|零食/)) continue;
+      rows.push({
+        date: String(time || '').slice(5, 10),
+        name: item,
+        kcost: parseFloat(String(amount || '').replace(/[¥￥,]/g, '')) || 0,
+        src: 'CSV'
+      });
+    }
+  }
+  return rows;
+}
+
+function onCsvFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (event) => {
+    const rows = parseCsv(event.target.result);
+    const box = document.getElementById('csvResult');
+    box.style.display = 'block';
+    if (!rows) {
+      pendingBills = [];
+      document.getElementById('csvMsg').innerHTML = '⚠️ 未识别出账单格式。请使用支付宝「账单导出」或微信「下载账单-个人对账」生成的 CSV 文件。';
+      return;
+    }
+    pendingBills = rows;
+    const total = rows.reduce((sum, item) => sum + item.kcost, 0);
+    document.getElementById('csvMsg').innerHTML = `
+      ✅ 解析成功：共 <b>${rows.length}</b> 条餐饮消费，合计 <b>¥${total.toFixed(2)}</b><br>
+      <span style="font-size:11px;opacity:.7">样例：${rows.slice(0, 3).map((item) => `${escapeHtml(item.date)} ${escapeHtml(item.name)} ¥${item.kcost}`).join('；')}${rows.length > 3 ? ' …' : ''}</span>
+    `;
+  };
+  reader.readAsText(file, 'GBK');
+}
+
+function confirmCsv() {
+  if (!pendingBills.length) {
+    toast('没有可导入的条目');
+    return;
+  }
+  DB.bills = DB.bills.concat(pendingBills);
+  pendingBills = [];
+  saveDB();
+  renderBills();
+  drawDual();
+  document.getElementById('csvResult').style.display = 'none';
+  toast('账单已导入并同步 ✓');
+}
+
+function onBillShot(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (event) => {
+    const image = document.getElementById('billPreview');
+    image.src = event.target.result;
+    image.style.display = 'block';
+    toast('正在运行截图识别演示…');
+    setTimeout(() => {
+      const rows = [
+        { date: '10-01', name: '黄焖鸡米饭', kcost: 22, src: '截图演示' },
+        { date: '10-01', name: '瑞幸咖啡', kcost: 15, src: '截图演示' },
+        { date: '09-30', name: '水果捞', kcost: 18, src: '截图演示' }
+      ];
+      pendingBills = rows;
+      document.getElementById('csvResult').style.display = 'block';
+      document.getElementById('csvMsg').innerHTML = `
+        🔍 <b>截图识别演示结果：</b>检测到 ${rows.length} 条餐饮消费，合计 <b>¥${rows.reduce((sum, item) => sum + item.kcost, 0)}</b><br>
+        <span style="font-size:11px;opacity:.7">${rows.map((item) => `${item.date} ${escapeHtml(item.name)} ¥${item.kcost}`).join('；')}</span>
+      `;
+    }, 900);
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderBills() {
+  const element = document.getElementById('billList');
+  if (!element) return;
+  if (!DB.bills.length) {
+    element.innerHTML = '<div class="empty-tip">暂无账单，试试上方 CSV 导入 📄</div>';
+    document.getElementById('billMonthTotal').textContent = '共 ¥0';
+    return;
+  }
+
+  const total = DB.bills.reduce((sum, item) => sum + item.kcost, 0);
+  document.getElementById('billMonthTotal').textContent = `共 ¥${total.toFixed(0)} · ${DB.bills.length}笔`;
+  element.innerHTML = DB.bills.map((bill, index) => `
+    <div class="item">
+      <div class="icon" style="background:#F1F3F9">🧾</div>
+      <div class="info"><b>${escapeHtml(bill.name)}</b><span>${escapeHtml(bill.date)} · 来源：${escapeHtml(bill.src)}</span></div>
+      <div class="right">¥${bill.kcost.toFixed(1)}<span></span></div>
+      <button class="btn ghost small" onclick="delBill(${index})">✕</button>
+    </div>
+  `).join('');
+}
+
+function delBill(index) {
+  DB.bills.splice(index, 1);
+  saveDB();
+  renderBills();
+  drawDual();
+  toast('已删除');
+}
+
+function dateFromKey(value) {
+  if (value instanceof Date) return new Date(value.getFullYear(), value.getMonth(), value.getDate(), 12);
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+}
+
+function parseBillDate(value, reference = new Date()) {
+  const text = String(value || '').trim();
+  let match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+
+  match = text.match(/^(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  let year = reference.getFullYear();
+  if (month > reference.getMonth() + 1) year -= 1;
+  return new Date(year, month - 1, day, 12);
+}
+
+function addDays(value, amount) {
+  const date = dateFromKey(value);
+  if (!date) return null;
+  date.setDate(date.getDate() + amount);
+  return date;
+}
+
+function dateRangeLabel(date) {
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function buildChartBuckets(period) {
+  const today = dateFromKey(new Date());
+  if (period === 'm') {
+    return Array.from({ length: 4 }, (_, index) => {
+      const start = addDays(today, -27 + (index * 7));
+      return { start, end: addDays(start, 6), label: `第${index + 1}周` };
+    });
+  }
+
+  if (period === 'q') {
+    return Array.from({ length: 4 }, (_, index) => {
+      const monthDate = new Date(today.getFullYear(), today.getMonth() - 3 + index, 1, 12);
+      const start = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1, 12);
+      const end = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0, 12);
+      return { start, end, label: `${monthDate.getMonth() + 1}月` };
+    });
+  }
+
+  const weekNames = ['日', '一', '二', '三', '四', '五', '六'];
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = addDays(today, -6 + index);
+    return { start: date, end: date, label: `周${weekNames[date.getDay()]}` };
+  });
+}
+
+function buildCostData(period = currentCostPeriod) {
+  const buckets = buildChartBuckets(period);
+  const sortedWeights = [...DB.weight].sort((a, b) => a.date.localeCompare(b.date));
+  const rawWeights = buckets.map((bucket) => {
+    const readings = sortedWeights.filter((item) => {
+      const date = dateFromKey(item.date);
+      return date && date >= bucket.start && date <= bucket.end;
+    });
+    return readings.length ? readings[readings.length - 1].value : null;
+  });
+
+  let previousWeight = null;
+  for (const item of sortedWeights) {
+    const date = dateFromKey(item.date);
+    if (!date || date >= buckets[0].start) break;
+    previousWeight = item.value;
+  }
+
+  const chartWeights = [...rawWeights];
+  let carry = previousWeight;
+  chartWeights.forEach((value, index) => {
+    if (Number.isFinite(value)) carry = value;
+    else if (Number.isFinite(carry)) chartWeights[index] = carry;
+  });
+  carry = null;
+  for (let index = chartWeights.length - 1; index >= 0; index -= 1) {
+    if (Number.isFinite(chartWeights[index])) carry = chartWeights[index];
+    else if (Number.isFinite(carry)) chartWeights[index] = carry;
+  }
+
+  const costs = buckets.map((bucket) => DB.bills.reduce((sum, bill) => {
+    const date = parseBillDate(bill.date);
+    return date && date >= bucket.start && date <= bucket.end ? sum + finiteNumber(bill.kcost, 0) : sum;
+  }, 0));
+  const periodStart = buckets[0].start;
+  const periodEnd = buckets[buckets.length - 1].end;
+  const actualWeights = sortedWeights
+    .filter((item) => {
+      const date = dateFromKey(item.date);
+      return date && date >= periodStart && date <= periodEnd;
+    })
+    .map((item) => item.value);
+  const totalCost = costs.reduce((sum, value) => sum + value, 0);
+  const weightChange = actualWeights.length > 1
+    ? actualWeights[actualWeights.length - 1] - actualWeights[0]
+    : null;
+  const weightLost = weightChange !== null && weightChange < 0 ? Math.abs(weightChange) : null;
+  const unitCost = weightLost ? totalCost / weightLost : null;
+
+  return {
+    labels: buckets.map((bucket) => bucket.label),
+    weights: chartWeights.map((value) => Number.isFinite(value) ? value : null),
+    rawWeights,
+    costs,
+    totalCost,
+    weightChange,
+    unitCost,
+    hasWeights: actualWeights.length > 0
+  };
+}
+
+function setPeriod(element, period) {
+  document.querySelectorAll('#periodSel span').forEach((span) => span.classList.remove('on'));
+  element.classList.add('on');
+  currentCostPeriod = period;
+  drawDual();
+}
+
+function drawDual() {
+  const chart = document.getElementById('dualChart');
+  if (!chart) return;
+  const data = buildCostData(currentCostPeriod);
+  const width = 360;
+  const height = 130;
+  const padding = 8;
+  const validWeights = data.weights.filter(Number.isFinite);
+
+  if (!validWeights.length && data.totalCost === 0) {
+    chart.innerHTML = '<div class="empty-tip">暂无体重或账单数据，记录后会生成真实图表。</div>';
+    document.getElementById('stW').textContent = '暂无数据';
+    document.getElementById('stC').textContent = '¥0';
+    document.getElementById('stU').textContent = '--';
+    renderAiCost(data);
+    return;
+  }
+
+  const weightMin = validWeights.length ? Math.min(...validWeights) - 0.2 : 0;
+  const weightMax = validWeights.length ? Math.max(...validWeights) + 0.2 : 1;
+  const costMax = Math.max(...data.costs, 1);
+  const x = (index) => padding + (index * (width - (2 * padding))) / (data.labels.length - 1);
+  const yWeight = (value) => height - ((value - weightMin) / (weightMax - weightMin)) * (height - 24) - 8;
+  const barWidth = Math.min(26, ((width - (2 * padding)) / data.labels.length) * 0.5);
+
+  let bars = '';
+  data.costs.forEach((cost, index) => {
+    if (cost <= 0) return;
+    const barHeight = Math.max(3, (cost / costMax) * (height - 24));
+    bars += `<rect x="${x(index) - barWidth / 2}" y="${height - barHeight - 8}" width="${barWidth}" height="${barHeight}" rx="3" fill="#FFD37E" opacity=".85"/>`;
+  });
+
+  const points = data.weights
+    .map((value, index) => Number.isFinite(value) ? `${x(index)},${yWeight(value)}` : null)
+    .filter(Boolean);
+  chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+    <line x1="${padding}" y1="${height - 8}" x2="${width - padding}" y2="${height - 8}" stroke="#E5E8F0"/>
+    ${bars}
+    ${points.length > 1 ? `<polyline points="${points.join(' ')}" fill="none" stroke="#4F6DF5" stroke-width="2.5" stroke-linecap="round"/>` : ''}
+    ${data.weights.map((value, index) => Number.isFinite(value) ? `<circle cx="${x(index)}" cy="${yWeight(value)}" r="3.5" fill="#4F6DF5"/>` : '').join('')}
+    ${data.labels.map((label, index) => `<text x="${x(index)}" y="${height + 4}" font-size="9" fill="#8A91A3" text-anchor="middle">${label}</text>`).join('')}
+  </svg>`;
+
+  document.getElementById('stW').textContent = data.weightChange === null
+    ? '暂无数据'
+    : `${data.weightChange <= 0 ? '▼' : '▲'} ${data.weightChange > 0 ? '+' : ''}${data.weightChange.toFixed(1)}kg`;
+  document.getElementById('stC').textContent = `¥${data.totalCost.toFixed(0)}`;
+  document.getElementById('stU').textContent = data.unitCost === null ? '--' : `¥${data.unitCost.toFixed(0)}`;
+  renderAiCost(data);
+}
+
+function renderAiCost(data = buildCostData(currentCostPeriod)) {
+  const element = document.getElementById('aiCost');
+  if (!element) return;
+  if (!data.hasWeights && data.totalCost === 0) {
+    element.innerHTML = '当前周期还没有体重和饮食消费记录。添加记录后，这里会显示真实汇总。';
+    return;
+  }
+
+  const periodName = currentCostPeriod === 'm' ? '本月' : currentCostPeriod === 'q' ? '本季度' : '本周';
+  if (!data.hasWeights) {
+    element.innerHTML = `${periodName}饮食消费合计 <b>¥${data.totalCost.toFixed(0)}</b>，但还没有足够的体重记录，暂时无法计算减重成本。`;
+    return;
+  }
+
+  const changeText = data.weightChange === null
+    ? '体重记录不足两次，暂不计算变化'
+    : `体重变化 <b>${data.weightChange > 0 ? '+' : ''}${data.weightChange.toFixed(1)}kg</b>`;
+  const unitText = data.unitCost === null
+    ? '本期没有形成减重，无法计算每公斤减重成本。'
+    : `按当前数据计算，每公斤减重成本约 <b>¥${data.unitCost.toFixed(0)}</b>。`;
+  element.innerHTML = `${periodName}${changeText}，饮食消费合计 <b>¥${data.totalCost.toFixed(0)}</b>。<br>${unitText}`;
+}
+
 function renderAll() {
   renderFood();
+  renderBills();
   renderExe();
   renderWeight();
   renderHabits();
@@ -791,6 +1146,7 @@ function renderAll() {
   renderMS();
   renderProfile();
   renderBodyMetrics();
+  drawDual();
 }
 
 function go(page, button) {
