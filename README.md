@@ -13,11 +13,25 @@
 4. 在 Redirect URLs 中加入同一地址，并按需加入本地开发地址。
 5. 如果启用了邮箱确认，注册后需要先在邮箱中点击确认链接。
 
+## DeepSeek API
+
+AI 分析通过 Supabase Edge Function 调用，DeepSeek Key 不会写入 GitHub Pages 前端。
+
+1. 在 Supabase Edge Functions 中创建或部署 `deepseek-analyze` 函数。
+2. 函数代码位于 `supabase/functions/deepseek-analyze/index.ts`。
+3. 在 Supabase Edge Function Secrets 中添加：
+
+   `DEEPSEEK_API_KEY=你的 DeepSeek API Key`
+
+4. 可选配置 `DEEPSEEK_MODEL`，默认使用 `deepseek-flash`。
+5. 部署成功后，网站中的“生成分析”和“重新分析”按钮会调用该函数。
+
 ## 文件说明
 
 - `slim girls_system.html`：页面结构与样式。
 - `app.js`：登录、数据读写和界面交互。
 - `supabase.js`：固定版本的 Supabase 浏览器 SDK。
 - `schema.sql`：数据库表、权限和 RLS 策略。
+- `supabase/functions/deepseek-analyze/index.ts`：DeepSeek 服务端代理函数。
 
 Supabase Project URL 和 publishable key 只用于前端公开访问；不要将 `service_role` key 写入前端文件。

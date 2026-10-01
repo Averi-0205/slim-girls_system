@@ -227,7 +227,7 @@ body.auth-locked{overflow:hidden}
       <div id="exeList"></div>
     </div>
     <div class="card">
-      <h3>AI 今日小结 🤖</h3>
+      <h3>AI 今日小结 🤖 <small><button class="btn ghost small" id="dailyAiBtn" onclick="generateDailyAI()">生成分析</button></small></h3>
       <div class="ai-msg" id="aiSummary"></div>
     </div>
   </div>
@@ -432,7 +432,7 @@ body.auth-locked{overflow:hidden}
       </div>
     </div>
     <div class="card">
-      <h3>🤖 消费关联分析 <small>基于当前记录</small></h3>
+      <h3>🤖 消费关联分析 <small><span id="aiCostStatus">基于当前记录</span> <button class="btn ghost small" id="costAiBtn" onclick="generateCostAI()">重新分析</button></small></h3>
       <div class="ai-msg" id="aiCost"></div>
     </div>
     <div class="card">
