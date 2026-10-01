@@ -44,11 +44,14 @@ let syncTimer = null;
 let syncBusy = false;
 let syncAgain = false;
 let toastTimer = null;
+let pendingBills = [];
+let currentCostPeriod = 'w';
 
 function createDefaultState() {
   return {
     db: {
       food: [],
+      bills: [],
       exe: [],
       weight: [],
       habits: {},
@@ -107,7 +110,15 @@ function normalizeState(raw) {
     name: String(item?.name || '饮食记录'),
     sub: String(item?.sub || '手动添加'),
     kcal: Math.max(0, Math.round(finiteNumber(item?.kcal, 0))),
+    cost: Math.max(0, finiteNumber(item?.cost, 0)),
     date: /^\d{4}-\d{2}-\d{2}$/.test(item?.date || '') ? item.date : todayKey()
+  }));
+
+  const bills = (Array.isArray(sourceDb.bills) ? sourceDb.bills : []).map((item) => ({
+    date: String(item?.date || ''),
+    name: String(item?.name || '餐饮消费'),
+    kcost: Math.max(0, finiteNumber(item?.kcost, 0)),
+    src: String(item?.src || '导入')
   }));
 
   const exe = (Array.isArray(sourceDb.exe) ? sourceDb.exe : []).map((item) => ({
@@ -187,7 +198,7 @@ function normalizeState(raw) {
     cur: Math.max(0, finiteNumber(item?.cur, 0))
   }));
 
-  return { db: { ...defaults.db, food, exe, weight, habits, water, diary, body, profile }, milestones };
+  return { db: { ...defaults.db, food, bills, exe, weight, habits, water, diary, body, profile }, milestones };
 }
 
 function getTodayFood() {
@@ -318,14 +329,17 @@ function renderFood() {
     return;
   }
 
+  const totalCost = rows.reduce((sum, { item }) => sum + finiteNumber(item.cost, 0), 0);
   element.innerHTML = rows.map(({ item, index }) => `
     <div class="item">
       <div class="icon" style="background:${safeColor(item.bg)}">${escapeHtml(item.icon)}</div>
       <div class="info"><b>${escapeHtml(item.name)}</b><span>${escapeHtml(item.sub)}</span></div>
-      <div class="right">${item.kcal}<span>kcal</span></div>
+      <div class="right">${item.kcal}<span>kcal · ¥${finiteNumber(item.cost, 0).toFixed(1)}</span></div>
       <button class="btn ghost small" onclick="delFood(${index})">✕</button>
     </div>
-  `).join('');
+  `).join('') + (totalCost > 0
+    ? `<div class="stat-row" style="margin-top:6px"><span>今日餐饮花费</span><span style="font-weight:700;color:var(--accent)">¥ ${totalCost.toFixed(2)}</span></div>`
+    : '');
 }
 
 function renderExe() {
@@ -389,6 +403,7 @@ function pickFood(index) {
     name: food[0],
     sub: '手动添加',
     kcal: food[1],
+    cost: Math.max(0, finiteNumber(document.getElementById('foodCost')?.value, 0)),
     date: todayKey()
   });
   saveDB();
@@ -405,6 +420,7 @@ function addFoodAI() {
     name: 'AI识别 · 鸡胸沙拉+糙米饭',
     sub: '拍照识别 · 420g · 蛋白35g',
     kcal: 480,
+    cost: 28,
     date: todayKey()
   });
   saveDB();
@@ -780,8 +796,206 @@ function addMilestone() {
   toast('里程碑已创建并同步 🏆');
 }
 
+function parseCsv(text) {
+  const lines = String(text || '').split(/\r?\n/).filter((line) => line.trim());
+  if (!lines.length) return null;
+
+  const header = lines[0];
+  const isAlipay = header.includes('交易分类');
+  const isWechat = header.includes('商品') && header.includes('收/支');
+  if (!isAlipay && !isWechat) return null;
+
+  const rows = [];
+  for (const line of lines.slice(1)) {
+    const columns = line.split(',').map((value) => value.trim().replace(/^"|"$/g, ''));
+    if (isAlipay) {
+      const time = columns[2] || columns[3];
+      const item = columns[8];
+      const amount = columns[9];
+      const direction = columns[10];
+      const status = columns[11];
+      const category = columns[12];
+      if (direction !== '支出' || String(status || '').includes('退款')) continue;
+      if (!String(category || '').match(/餐饮|美食|食品/)) continue;
+      rows.push({
+        date: String(time || '').slice(5, 10),
+        name: item,
+        kcost: parseFloat(amount) || 0,
+        src: 'CSV'
+      });
+    } else {
+      const time = columns[0];
+      const item = columns[3];
+      const direction = columns[4];
+      const amount = columns[5];
+      const status = columns[7];
+      if (direction !== '支出' || status !== '支付成功') continue;
+      if (!String(item || '').match(/餐|饭|面|粉|奶茶|咖啡|小吃|超市|便利|菜|肉|水果|外卖|零食/)) continue;
+      rows.push({
+        date: String(time || '').slice(5, 10),
+        name: item,
+        kcost: parseFloat(String(amount || '').replace(/[¥￥,]/g, '')) || 0,
+        src: 'CSV'
+      });
+    }
+  }
+  return rows;
+}
+
+function onCsvFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (event) => {
+    const rows = parseCsv(event.target.result);
+    const box = document.getElementById('csvResult');
+    box.style.display = 'block';
+    if (!rows) {
+      pendingBills = [];
+      document.getElementById('csvMsg').innerHTML = '⚠️ 未识别出账单格式。请使用支付宝「账单导出」或微信「下载账单-个人对账」生成的 CSV 文件。';
+      return;
+    }
+    pendingBills = rows;
+    const total = rows.reduce((sum, item) => sum + item.kcost, 0);
+    document.getElementById('csvMsg').innerHTML = `
+      ✅ 解析成功：共 <b>${rows.length}</b> 条餐饮消费，合计 <b>¥${total.toFixed(2)}</b><br>
+      <span style="font-size:11px;opacity:.7">样例：${rows.slice(0, 3).map((item) => `${escapeHtml(item.date)} ${escapeHtml(item.name)} ¥${item.kcost}`).join('；')}${rows.length > 3 ? ' …' : ''}</span>
+    `;
+  };
+  reader.readAsText(file, 'GBK');
+}
+
+function confirmCsv() {
+  if (!pendingBills.length) {
+    toast('没有可导入的条目');
+    return;
+  }
+  DB.bills = DB.bills.concat(pendingBills);
+  pendingBills = [];
+  saveDB();
+  renderBills();
+  drawDual();
+  document.getElementById('csvResult').style.display = 'none';
+  toast('账单已导入并同步 ✓');
+}
+
+function onBillShot(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (event) => {
+    const image = document.getElementById('billPreview');
+    image.src = event.target.result;
+    image.style.display = 'block';
+    toast('正在运行截图识别演示…');
+    setTimeout(() => {
+      const rows = [
+        { date: '10-01', name: '黄焖鸡米饭', kcost: 22, src: '截图演示' },
+        { date: '10-01', name: '瑞幸咖啡', kcost: 15, src: '截图演示' },
+        { date: '09-30', name: '水果捞', kcost: 18, src: '截图演示' }
+      ];
+      pendingBills = rows;
+      document.getElementById('csvResult').style.display = 'block';
+      document.getElementById('csvMsg').innerHTML = `
+        🔍 <b>截图识别演示结果：</b>检测到 ${rows.length} 条餐饮消费，合计 <b>¥${rows.reduce((sum, item) => sum + item.kcost, 0)}</b><br>
+        <span style="font-size:11px;opacity:.7">${rows.map((item) => `${item.date} ${escapeHtml(item.name)} ¥${item.kcost}`).join('；')}</span>
+      `;
+    }, 900);
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderBills() {
+  const element = document.getElementById('billList');
+  if (!element) return;
+  if (!DB.bills.length) {
+    element.innerHTML = '<div class="empty-tip">暂无账单，试试上方 CSV 导入 📄</div>';
+    document.getElementById('billMonthTotal').textContent = '共 ¥0';
+    return;
+  }
+
+  const total = DB.bills.reduce((sum, item) => sum + item.kcost, 0);
+  document.getElementById('billMonthTotal').textContent = `共 ¥${total.toFixed(0)} · ${DB.bills.length}笔`;
+  element.innerHTML = DB.bills.map((bill, index) => `
+    <div class="item">
+      <div class="icon" style="background:#F1F3F9">🧾</div>
+      <div class="info"><b>${escapeHtml(bill.name)}</b><span>${escapeHtml(bill.date)} · 来源：${escapeHtml(bill.src)}</span></div>
+      <div class="right">¥${bill.kcost.toFixed(1)}<span></span></div>
+      <button class="btn ghost small" onclick="delBill(${index})">✕</button>
+    </div>
+  `).join('');
+}
+
+function delBill(index) {
+  DB.bills.splice(index, 1);
+  saveDB();
+  renderBills();
+  drawDual();
+  toast('已删除');
+}
+
+const COST_DATA = {
+  w: { labels: ['一', '二', '三', '四', '五', '六', '日'], w: [68.5, 68.4, 68.4, 68.3, 68.1, 68.3, 68.2], c: [62, 45, 58, 70, 155, 96, 0], wChg: '-0.3kg', cTot: '¥486', unit: '¥1,620' },
+  m: { labels: ['第1周', '第2周', '第3周', '第4周'], w: [69.4, 69.0, 68.7, 68.2], c: [520, 486, 610, 435], wChg: '-1.2kg', cTot: '¥2,051', unit: '¥1,709' },
+  q: { labels: ['7月', '8月', '9月', '10月'], w: [71.5, 70.6, 69.4, 68.2], c: [1980, 2240, 2051, 486], wChg: '-3.3kg', cTot: '¥6,757', unit: '¥2,048' }
+};
+
+function setPeriod(element, period) {
+  document.querySelectorAll('#periodSel span').forEach((span) => span.classList.remove('on'));
+  element.classList.add('on');
+  currentCostPeriod = period;
+  drawDual();
+}
+
+function drawDual() {
+  const chart = document.getElementById('dualChart');
+  if (!chart) return;
+  const data = COST_DATA[currentCostPeriod] || COST_DATA.w;
+  const width = 360;
+  const height = 130;
+  const padding = 8;
+  const weightMin = Math.min(...data.w) - 0.2;
+  const weightMax = Math.max(...data.w) + 0.2;
+  const costMax = Math.max(...data.c, 1);
+  const x = (index) => padding + (index * (width - (2 * padding))) / (data.labels.length - 1);
+  const yWeight = (value) => height - ((value - weightMin) / (weightMax - weightMin)) * (height - 24) - 8;
+  const barWidth = Math.min(26, ((width - (2 * padding)) / data.labels.length) * 0.5);
+
+  let bars = '';
+  data.c.forEach((cost, index) => {
+    const barHeight = Math.max(3, (cost / costMax) * (height - 24));
+    bars += `<rect x="${x(index) - barWidth / 2}" y="${height - barHeight - 8}" width="${barWidth}" height="${barHeight}" rx="3" fill="#FFD37E" opacity=".85"/>`;
+  });
+
+  const points = data.w.map((value, index) => `${x(index)},${yWeight(value)}`);
+  chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+    <line x1="${padding}" y1="${height - 8}" x2="${width - padding}" y2="${height - 8}" stroke="#E5E8F0"/>
+    ${bars}
+    <polyline points="${points.join(' ')}" fill="none" stroke="#4F6DF5" stroke-width="2.5" stroke-linecap="round"/>
+    ${data.w.map((value, index) => `<circle cx="${x(index)}" cy="${yWeight(value)}" r="3.5" fill="#4F6DF5"/>`).join('')}
+    ${data.labels.map((label, index) => `<text x="${x(index)}" y="${height + 4}" font-size="9" fill="#8A91A3" text-anchor="middle">${label}</text>`).join('')}
+  </svg>`;
+
+  document.getElementById('stW').textContent = data.wChg;
+  document.getElementById('stC').textContent = data.cTot;
+  document.getElementById('stU').textContent = data.unit;
+  renderAiCost();
+}
+
+function renderAiCost() {
+  const element = document.getElementById('aiCost');
+  if (!element) return;
+  const text = {
+    w: '本周体重 <b>-0.3kg</b>，饮食消费 <b>¥486</b>。周六消费突增（¥155）次日体重回升 +0.2kg，符合「高消费日→高盐高油→水分滞留」模式，属正常波动，不必焦虑。建议将高消费餐安排在中午，晚餐清淡即可快速回落。',
+    m: '本月体重 <b>-1.2kg</b>，花费 <b>¥2,051</b>，每公斤减重成本 <b>¥1,709</b>。第 3 周消费最高（¥610）但体重仍下降，说明该周运动量增加有效对冲。外食占比 62%，若自己做饭比例提升到 50%，预计月省 <b>¥380</b> 且减重速度可加快 15%。',
+    q: '本季度累计减重 <b>3.3kg</b>，饮食总消费 <b>¥6,757</b>。相关性分析：消费周与体重周变化呈 <b>弱正相关（r=0.34）</b>——消费每增加 ¥100，次周体重平均 +0.05kg，但影响 3 天内消退。真正影响体重的是消费结构：奶茶/外卖占比 &gt;40% 的周，体重下降率降低 <b>40%</b>。建议：保留消费额度，优先把奶茶换成咖啡/茶。'
+  };
+  element.innerHTML = text[currentCostPeriod] || text.w;
+}
+
 function renderAll() {
   renderFood();
+  renderBills();
   renderExe();
   renderWeight();
   renderHabits();
@@ -791,6 +1005,7 @@ function renderAll() {
   renderMS();
   renderProfile();
   renderBodyMetrics();
+  drawDual();
 }
 
 function go(page, button) {

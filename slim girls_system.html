@@ -83,7 +83,7 @@ input:focus,select:focus{border-color:var(--primary)}
 .stat-row{display:flex;justify-content:space-between;font-size:12px;color:var(--text-sub);margin-top:4px}
 /* ===== 底部导航 ===== */
 .tabbar{position:fixed;bottom:0;left:0;right:0;max-width:420px;margin:0 auto;background:#fff;border-top:1px solid #ECEFF5;display:flex;z-index:100;padding-bottom:env(safe-area-inset-bottom)}
-.tabbar button{flex:1;background:none;border:none;padding:8px 0 6px;font-size:10px;color:var(--text-sub);cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px}
+.tabbar button{flex:1;background:none;border:none;padding:7px 0 5px;font-size:9px;color:var(--text-sub);cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px}
 .tabbar button .ic{font-size:21px}
 .tabbar button.active{color:var(--primary);font-weight:700}
 /* ===== 中央+号 ===== */
@@ -393,6 +393,77 @@ body.auth-locked{overflow:hidden}
     </div>
   </div>
 
+  <!-- ================= 页面5.5：消费分析 ================= -->
+  <div class="page" id="page-cost">
+    <div class="card">
+      <h3>📥 导入饮食账单 <small>自动识别餐饮消费</small></h3>
+      <div class="grid2">
+        <div class="upload-zone" style="padding:16px 8px" onclick="document.getElementById('csvFile').click()">
+          <span class="big">📄</span>上传 CSV 账单<br><small style="font-size:10px">支付宝 / 微信账单导出文件</small>
+          <input type="file" id="csvFile" accept=".csv,.txt" onchange="onCsvFile(this)">
+        </div>
+        <div class="upload-zone" style="padding:16px 8px" onclick="document.getElementById('billShot').click()">
+          <span class="big">📷</span>上传截图<br><small style="font-size:10px">记账App账单页截图，AI识别</small>
+          <input type="file" id="billShot" accept="image/*" onchange="onBillShot(this)">
+          <img class="preview-img" id="billPreview">
+        </div>
+      </div>
+      <div id="csvResult" style="display:none;margin-top:12px">
+        <div class="ai-msg" id="csvMsg"></div>
+        <div class="btn-row"><button class="btn" onclick="confirmCsv()">✓ 导入餐饮条目</button></div>
+      </div>
+      <p style="font-size:11px;color:var(--text-sub);margin-top:10px">💡 支付宝：我的→账单→…→账单导出；微信：我→服务→钱包→账单→下载账单。CSV 仅在浏览器本地解析，确认导入后才会同步到你的 Supabase 账户。</p>
+    </div>
+    <div class="card">
+      <h3>🧾 本月饮食账单 <small id="billMonthTotal">共 ¥0</small></h3>
+      <div id="billList"></div>
+    </div>
+    <div class="card">
+      <h3>⚖️×💸 体重 × 饮食消费 对比 <small>
+        <span class="quick" id="periodSel" style="display:inline-flex;gap:6px">
+          <span class="on" onclick="setPeriod(this,'w')">周</span><span onclick="setPeriod(this,'m')">月</span><span onclick="setPeriod(this,'q')">季</span>
+        </span></small></h3>
+      <div class="chart-line" id="dualChart"></div>
+      <div class="stat-row"><span>— 蓝线：体重 kg（左轴） — 橙柱：饮食消费 ¥（右轴） —</span></div>
+      <div class="grid3" style="text-align:center;margin-top:12px">
+        <div><p style="font-size:11px;color:var(--text-sub)">本期体重变化</p><b style="font-size:17px;color:var(--green)" id="stW">-0.6kg</b></div>
+        <div><p style="font-size:11px;color:var(--text-sub)">本期饮食消费</p><b style="font-size:17px" id="stC">¥486</b></div>
+        <div><p style="font-size:11px;color:var(--text-sub)">每公斤减重成本</p><b style="font-size:17px;color:var(--accent)" id="stU">¥810</b></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>🤖 消费关联分析 <small>当前为演示数据</small></h3>
+      <div class="ai-msg" id="aiCost"></div>
+    </div>
+    <div class="card">
+      <h3>🍱 消费结构分析</h3>
+      <div class="item"><div class="icon" style="background:#E5F8EF">🍳</div><div class="info"><b>自己做饭</b><div class="progress green"><i style="width:26%"></i></div></div><div class="right">¥210<span>/周 · 减重更快</span></div></div>
+      <div class="item"><div class="icon" style="background:#FEF3E2">🥡</div><div class="info"><b>外卖外食</b><div class="progress orange"><i style="width:72%"></i></div></div><div class="right">¥580<span>/周 · 体重易反弹</span></div></div>
+      <div class="item" style="border:none"><div class="icon" style="background:#FDECEC">🧋</div><div class="info"><b>奶茶甜品</b><div class="progress"><i style="width:14%;background:var(--red)"></i></div></div><div class="right">¥180<span>/月 · 月增约2400kcal</span></div></div>
+    </div>
+  </div>
+
+  <!-- ================= 页面5.6：里程碑 ================= -->
+  <div class="page" id="page-ms">
+    <div class="card">
+      <h3>🏆 我的里程碑 <small>达成自动解锁奖励</small></h3>
+      <div id="msList"></div>
+      <button class="btn" style="margin-top:12px" onclick="openModal('modal-ms-add')">＋ 新增里程碑</button>
+    </div>
+    <div class="card">
+      <h3>⚙️ 奖励通知设置</h3>
+      <div class="set-row"><div>达成时弹窗庆祝动画<small>全屏彩带 + 音效</small></div><div class="switch on" onclick="this.classList.toggle('on')"></div></div>
+      <div class="set-row"><div>达成时通知好友<small>排行榜同步展示</small></div><div class="switch" onclick="this.classList.toggle('on')"></div></div>
+      <div class="set-row"><div>临期提醒<small>距离目标还差 20% 时提醒冲刺</small></div><div class="switch on" onclick="this.classList.toggle('on')"></div></div>
+    </div>
+    <div class="card">
+      <h3>📜 已达成记录</h3>
+      <div class="item"><div class="icon" style="background:#E5F8EF">✅</div><div class="info"><b>累计减重 3kg</b><span>9月20日达成 · 奖励：一顿火锅 🍲</span></div><div class="right"><span class="tag green">已兑现</span></div></div>
+      <div class="item"><div class="icon" style="background:#E5F8EF">✅</div><div class="info"><b>连续打卡 7 天</b><span>9月15日达成 · 奖励：周末郊游 🌿</span></div><div class="right"><span class="tag green">已兑现</span></div></div>
+      <div class="item" style="border:none"><div class="icon" style="background:#FEF3E2">🔜</div><div class="info"><b>累计减重 5kg</b><span>进度 80% · 奖励：新跑鞋 👟</span></div><div class="right"><span class="tag orange">进行中</span></div></div>
+    </div>
+  </div>
+
   <!-- ================= 页面6：我的 ================= -->
   <div class="page" id="page-me">
     <div class="card" style="display:flex;align-items:center;gap:14px">
@@ -446,13 +517,6 @@ body.auth-locked{overflow:hidden}
       <div class="btn-row" style="margin-top:12px"><button class="btn danger" onclick="clearAllData()">清空所有数据</button></div>
     </div>
     <div class="card">
-      <h3>🏆 里程碑与奖励设置 <small>达成自动解锁</small></h3>
-      <div id="msList"></div>
-      <button class="btn secondary" style="margin-top:10px" onclick="openModal('modal-ms-add')">＋ 新增里程碑</button>
-      <div class="set-row" style="margin-top:8px"><div>达成时弹窗庆祝动画<small>全屏彩带 + 音效</small></div><div class="switch on" onclick="this.classList.toggle('on')"></div></div>
-      <div class="set-row"><div>达成时通知好友<small>排行榜同步展示</small></div><div class="switch" onclick="this.classList.toggle('on')"></div></div>
-    </div>
-    <div class="card">
       <h3>🤖 AI 设置 <small>DeepSeek API</small></h3>
       <div class="field"><label>API Key（将存于 Supabase 边缘函数，前端不暴露）</label><input placeholder="sk-••••••••••••••••" type="password"></div>
       <div class="field"><label>AI 识别模式</label><select><option>拍照识别食物 + 估算克重</option><option>仅识别食物种类</option></select></div>
@@ -470,6 +534,8 @@ body.auth-locked{overflow:hidden}
   <!-- 底部导航 -->
   <nav class="tabbar">
     <button class="active" onclick="go('home',this)"><span class="ic">🏠</span>首页</button>
+    <button onclick="go('cost',this)"><span class="ic">💸</span>消费</button>
+    <button onclick="go('ms',this)"><span class="ic">🏆</span>里程碑</button>
     <button onclick="go('weight',this)"><span class="ic">⚖️</span>体重</button>
     <button onclick="go('habit',this)"><span class="ic">✅</span>习惯</button>
     <button onclick="go('plan',this)"><span class="ic">📋</span>计划</button>
@@ -512,7 +578,8 @@ body.auth-locked{overflow:hidden}
         <button class="btn secondary" onclick="toast('已切换到手动修正模式 ✏️')">修正</button>
       </div>
     </div>
-    <p style="text-align:center;font-size:12px;color:var(--text-sub);margin:14px 0 6px">— 或手动搜索 —</p>
+    <div class="field" style="margin-top:12px"><label>本餐花费（元，可选）</label><input type="number" id="foodCost" placeholder="记录这餐花了多少钱 💸" step="0.5"></div>
+    <p style="text-align:center;font-size:12px;color:var(--text-sub);margin:6px 0 6px">— 或手动搜索 —</p>
     <input placeholder="🔍 搜索食物，如：米饭、鸡胸肉…" oninput="renderFoodOpts(this.value)">
     <div class="food-cat" style="margin-top:12px">
       <span class="on">常用</span><span>主食</span><span>肉蛋</span><span>蔬果</span><span>饮品</span><span>零食</span>
