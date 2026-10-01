@@ -484,6 +484,7 @@ function saveWeight() {
   renderWeight();
   renderProfile();
   renderDashboard();
+  drawDual();
   closeAll();
   toast('体重已保存到云端 ⚖️');
 }
@@ -934,11 +935,123 @@ function delBill(index) {
   toast('已删除');
 }
 
-const COST_DATA = {
-  w: { labels: ['一', '二', '三', '四', '五', '六', '日'], w: [68.5, 68.4, 68.4, 68.3, 68.1, 68.3, 68.2], c: [62, 45, 58, 70, 155, 96, 0], wChg: '-0.3kg', cTot: '¥486', unit: '¥1,620' },
-  m: { labels: ['第1周', '第2周', '第3周', '第4周'], w: [69.4, 69.0, 68.7, 68.2], c: [520, 486, 610, 435], wChg: '-1.2kg', cTot: '¥2,051', unit: '¥1,709' },
-  q: { labels: ['7月', '8月', '9月', '10月'], w: [71.5, 70.6, 69.4, 68.2], c: [1980, 2240, 2051, 486], wChg: '-3.3kg', cTot: '¥6,757', unit: '¥2,048' }
-};
+function dateFromKey(value) {
+  if (value instanceof Date) return new Date(value.getFullYear(), value.getMonth(), value.getDate(), 12);
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+}
+
+function parseBillDate(value, reference = new Date()) {
+  const text = String(value || '').trim();
+  let match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+
+  match = text.match(/^(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  let year = reference.getFullYear();
+  if (month > reference.getMonth() + 1) year -= 1;
+  return new Date(year, month - 1, day, 12);
+}
+
+function addDays(value, amount) {
+  const date = dateFromKey(value);
+  if (!date) return null;
+  date.setDate(date.getDate() + amount);
+  return date;
+}
+
+function dateRangeLabel(date) {
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function buildChartBuckets(period) {
+  const today = dateFromKey(new Date());
+  if (period === 'm') {
+    return Array.from({ length: 4 }, (_, index) => {
+      const start = addDays(today, -27 + (index * 7));
+      return { start, end: addDays(start, 6), label: `第${index + 1}周` };
+    });
+  }
+
+  if (period === 'q') {
+    return Array.from({ length: 4 }, (_, index) => {
+      const monthDate = new Date(today.getFullYear(), today.getMonth() - 3 + index, 1, 12);
+      const start = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1, 12);
+      const end = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0, 12);
+      return { start, end, label: `${monthDate.getMonth() + 1}月` };
+    });
+  }
+
+  const weekNames = ['日', '一', '二', '三', '四', '五', '六'];
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = addDays(today, -6 + index);
+    return { start: date, end: date, label: `周${weekNames[date.getDay()]}` };
+  });
+}
+
+function buildCostData(period = currentCostPeriod) {
+  const buckets = buildChartBuckets(period);
+  const sortedWeights = [...DB.weight].sort((a, b) => a.date.localeCompare(b.date));
+  const rawWeights = buckets.map((bucket) => {
+    const readings = sortedWeights.filter((item) => {
+      const date = dateFromKey(item.date);
+      return date && date >= bucket.start && date <= bucket.end;
+    });
+    return readings.length ? readings[readings.length - 1].value : null;
+  });
+
+  let previousWeight = null;
+  for (const item of sortedWeights) {
+    const date = dateFromKey(item.date);
+    if (!date || date >= buckets[0].start) break;
+    previousWeight = item.value;
+  }
+
+  const chartWeights = [...rawWeights];
+  let carry = previousWeight;
+  chartWeights.forEach((value, index) => {
+    if (Number.isFinite(value)) carry = value;
+    else if (Number.isFinite(carry)) chartWeights[index] = carry;
+  });
+  carry = null;
+  for (let index = chartWeights.length - 1; index >= 0; index -= 1) {
+    if (Number.isFinite(chartWeights[index])) carry = chartWeights[index];
+    else if (Number.isFinite(carry)) chartWeights[index] = carry;
+  }
+
+  const costs = buckets.map((bucket) => DB.bills.reduce((sum, bill) => {
+    const date = parseBillDate(bill.date);
+    return date && date >= bucket.start && date <= bucket.end ? sum + finiteNumber(bill.kcost, 0) : sum;
+  }, 0));
+  const periodStart = buckets[0].start;
+  const periodEnd = buckets[buckets.length - 1].end;
+  const actualWeights = sortedWeights
+    .filter((item) => {
+      const date = dateFromKey(item.date);
+      return date && date >= periodStart && date <= periodEnd;
+    })
+    .map((item) => item.value);
+  const totalCost = costs.reduce((sum, value) => sum + value, 0);
+  const weightChange = actualWeights.length > 1
+    ? actualWeights[actualWeights.length - 1] - actualWeights[0]
+    : null;
+  const weightLost = weightChange !== null && weightChange < 0 ? Math.abs(weightChange) : null;
+  const unitCost = weightLost ? totalCost / weightLost : null;
+
+  return {
+    labels: buckets.map((bucket) => bucket.label),
+    weights: chartWeights.map((value) => Number.isFinite(value) ? value : null),
+    rawWeights,
+    costs,
+    totalCost,
+    weightChange,
+    unitCost,
+    hasWeights: actualWeights.length > 0
+  };
+}
 
 function setPeriod(element, period) {
   document.querySelectorAll('#periodSel span').forEach((span) => span.classList.remove('on'));
@@ -950,47 +1063,75 @@ function setPeriod(element, period) {
 function drawDual() {
   const chart = document.getElementById('dualChart');
   if (!chart) return;
-  const data = COST_DATA[currentCostPeriod] || COST_DATA.w;
+  const data = buildCostData(currentCostPeriod);
   const width = 360;
   const height = 130;
   const padding = 8;
-  const weightMin = Math.min(...data.w) - 0.2;
-  const weightMax = Math.max(...data.w) + 0.2;
-  const costMax = Math.max(...data.c, 1);
+  const validWeights = data.weights.filter(Number.isFinite);
+
+  if (!validWeights.length && data.totalCost === 0) {
+    chart.innerHTML = '<div class="empty-tip">暂无体重或账单数据，记录后会生成真实图表。</div>';
+    document.getElementById('stW').textContent = '暂无数据';
+    document.getElementById('stC').textContent = '¥0';
+    document.getElementById('stU').textContent = '--';
+    renderAiCost(data);
+    return;
+  }
+
+  const weightMin = validWeights.length ? Math.min(...validWeights) - 0.2 : 0;
+  const weightMax = validWeights.length ? Math.max(...validWeights) + 0.2 : 1;
+  const costMax = Math.max(...data.costs, 1);
   const x = (index) => padding + (index * (width - (2 * padding))) / (data.labels.length - 1);
   const yWeight = (value) => height - ((value - weightMin) / (weightMax - weightMin)) * (height - 24) - 8;
   const barWidth = Math.min(26, ((width - (2 * padding)) / data.labels.length) * 0.5);
 
   let bars = '';
-  data.c.forEach((cost, index) => {
+  data.costs.forEach((cost, index) => {
+    if (cost <= 0) return;
     const barHeight = Math.max(3, (cost / costMax) * (height - 24));
     bars += `<rect x="${x(index) - barWidth / 2}" y="${height - barHeight - 8}" width="${barWidth}" height="${barHeight}" rx="3" fill="#FFD37E" opacity=".85"/>`;
   });
 
-  const points = data.w.map((value, index) => `${x(index)},${yWeight(value)}`);
+  const points = data.weights
+    .map((value, index) => Number.isFinite(value) ? `${x(index)},${yWeight(value)}` : null)
+    .filter(Boolean);
   chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
     <line x1="${padding}" y1="${height - 8}" x2="${width - padding}" y2="${height - 8}" stroke="#E5E8F0"/>
     ${bars}
-    <polyline points="${points.join(' ')}" fill="none" stroke="#4F6DF5" stroke-width="2.5" stroke-linecap="round"/>
-    ${data.w.map((value, index) => `<circle cx="${x(index)}" cy="${yWeight(value)}" r="3.5" fill="#4F6DF5"/>`).join('')}
+    ${points.length > 1 ? `<polyline points="${points.join(' ')}" fill="none" stroke="#4F6DF5" stroke-width="2.5" stroke-linecap="round"/>` : ''}
+    ${data.weights.map((value, index) => Number.isFinite(value) ? `<circle cx="${x(index)}" cy="${yWeight(value)}" r="3.5" fill="#4F6DF5"/>` : '').join('')}
     ${data.labels.map((label, index) => `<text x="${x(index)}" y="${height + 4}" font-size="9" fill="#8A91A3" text-anchor="middle">${label}</text>`).join('')}
   </svg>`;
 
-  document.getElementById('stW').textContent = data.wChg;
-  document.getElementById('stC').textContent = data.cTot;
-  document.getElementById('stU').textContent = data.unit;
-  renderAiCost();
+  document.getElementById('stW').textContent = data.weightChange === null
+    ? '暂无数据'
+    : `${data.weightChange <= 0 ? '▼' : '▲'} ${data.weightChange > 0 ? '+' : ''}${data.weightChange.toFixed(1)}kg`;
+  document.getElementById('stC').textContent = `¥${data.totalCost.toFixed(0)}`;
+  document.getElementById('stU').textContent = data.unitCost === null ? '--' : `¥${data.unitCost.toFixed(0)}`;
+  renderAiCost(data);
 }
 
-function renderAiCost() {
+function renderAiCost(data = buildCostData(currentCostPeriod)) {
   const element = document.getElementById('aiCost');
   if (!element) return;
-  const text = {
-    w: '本周体重 <b>-0.3kg</b>，饮食消费 <b>¥486</b>。周六消费突增（¥155）次日体重回升 +0.2kg，符合「高消费日→高盐高油→水分滞留」模式，属正常波动，不必焦虑。建议将高消费餐安排在中午，晚餐清淡即可快速回落。',
-    m: '本月体重 <b>-1.2kg</b>，花费 <b>¥2,051</b>，每公斤减重成本 <b>¥1,709</b>。第 3 周消费最高（¥610）但体重仍下降，说明该周运动量增加有效对冲。外食占比 62%，若自己做饭比例提升到 50%，预计月省 <b>¥380</b> 且减重速度可加快 15%。',
-    q: '本季度累计减重 <b>3.3kg</b>，饮食总消费 <b>¥6,757</b>。相关性分析：消费周与体重周变化呈 <b>弱正相关（r=0.34）</b>——消费每增加 ¥100，次周体重平均 +0.05kg，但影响 3 天内消退。真正影响体重的是消费结构：奶茶/外卖占比 &gt;40% 的周，体重下降率降低 <b>40%</b>。建议：保留消费额度，优先把奶茶换成咖啡/茶。'
-  };
-  element.innerHTML = text[currentCostPeriod] || text.w;
+  if (!data.hasWeights && data.totalCost === 0) {
+    element.innerHTML = '当前周期还没有体重和饮食消费记录。添加记录后，这里会显示真实汇总。';
+    return;
+  }
+
+  const periodName = currentCostPeriod === 'm' ? '本月' : currentCostPeriod === 'q' ? '本季度' : '本周';
+  if (!data.hasWeights) {
+    element.innerHTML = `${periodName}饮食消费合计 <b>¥${data.totalCost.toFixed(0)}</b>，但还没有足够的体重记录，暂时无法计算减重成本。`;
+    return;
+  }
+
+  const changeText = data.weightChange === null
+    ? '体重记录不足两次，暂不计算变化'
+    : `体重变化 <b>${data.weightChange > 0 ? '+' : ''}${data.weightChange.toFixed(1)}kg</b>`;
+  const unitText = data.unitCost === null
+    ? '本期没有形成减重，无法计算每公斤减重成本。'
+    : `按当前数据计算，每公斤减重成本约 <b>¥${data.unitCost.toFixed(0)}</b>。`;
+  element.innerHTML = `${periodName}${changeText}，饮食消费合计 <b>¥${data.totalCost.toFixed(0)}</b>。<br>${unitText}`;
 }
 
 function renderAll() {
