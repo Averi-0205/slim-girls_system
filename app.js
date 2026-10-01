@@ -45,12 +45,14 @@ let syncBusy = false;
 let syncAgain = false;
 let toastTimer = null;
 let pendingBills = [];
+let pendingFoodAI = null;
 let currentCostPeriod = 'w';
 
 function createDefaultState() {
   return {
     db: {
       food: [],
+      customFoods: [],
       bills: [],
       exe: [],
       weight: [],
@@ -124,6 +126,13 @@ function normalizeState(raw) {
     kcost: Math.max(0, finiteNumber(item?.kcost, 0)),
     src: String(item?.src || '导入')
   }));
+
+  const customFoods = (Array.isArray(sourceDb.customFoods) ? sourceDb.customFoods : [])
+    .map((item) => ({
+      name: String(item?.name || '').trim(),
+      kcal: Math.max(0, Math.round(finiteNumber(item?.kcal, 0)))
+    }))
+    .filter((item) => item.name && item.kcal > 0);
 
   const exe = (Array.isArray(sourceDb.exe) ? sourceDb.exe : []).map((item) => ({
     icon: item?.icon || '🏃',
@@ -225,7 +234,7 @@ function normalizeState(raw) {
     cur: Math.max(0, finiteNumber(item?.cur, 0))
   }));
 
-  return { db: { ...defaults.db, food, bills, exe, weight, habits, water, diary, body, ai, profile }, milestones };
+  return { db: { ...defaults.db, food, customFoods, bills, exe, weight, habits, water, diary, body, ai, profile }, milestones };
 }
 
 function getTodayFood() {
@@ -409,7 +418,8 @@ function delExe(index) {
 
 function renderFoodOpts(query = '') {
   const normalized = String(query).trim();
-  const rows = FOODS
+  const allFoods = FOODS.concat(DB.customFoods.map((item) => [item.name, item.kcal]));
+  const rows = allFoods
     .map((food, index) => ({ food, index }))
     .filter(({ food }) => !normalized || food[0].includes(normalized));
 
@@ -422,7 +432,7 @@ function renderFoodOpts(query = '') {
 }
 
 function pickFood(index) {
-  const food = FOODS[index];
+  const food = FOODS.concat(DB.customFoods.map((item) => [item.name, item.kcal]))[index];
   if (!food) return;
   DB.food.push({
     icon: '🍽️',
@@ -440,21 +450,55 @@ function pickFood(index) {
   toast(`已记录：${food[0]} ${food[1]} kcal ✓`);
 }
 
-function addFoodAI() {
+function addCustomFood() {
+  const name = document.getElementById('cFoodName')?.value.trim();
+  const kcal = finiteNumber(document.getElementById('cFoodKcal')?.value);
+  const portion = document.getElementById('cFoodPortion')?.value.trim();
+  if (!name || kcal === null || kcal <= 0) {
+    toast('请填写食物名称和预估热量');
+    return;
+  }
+
+  const label = portion ? `${name}（${portion}）` : name;
+  DB.customFoods.push({ name: label, kcal: Math.round(kcal) });
   DB.food.push({
-    icon: '🥗',
+    icon: '✨',
     bg: '#E8EDFF',
-    name: 'AI识别 · 鸡胸沙拉+糙米饭',
-    sub: '拍照识别 · 420g · 蛋白35g',
-    kcal: 480,
-    cost: 28,
+    name: `自定义 · ${label}`,
+    sub: `预估 ${Math.round(kcal)} kcal · 已存入食物库`,
+    kcal: Math.round(kcal),
+    cost: Math.max(0, finiteNumber(document.getElementById('foodCost')?.value, 0)),
+    date: todayKey()
+  });
+  saveDB();
+  renderFood();
+  renderFoodOpts('');
+  renderDashboard();
+  closeAll();
+  toast(`自定义食物已保存并记录：${label} ✓`);
+}
+
+function addFoodAI() {
+  if (!pendingFoodAI) {
+    toast('请先上传并识别食物照片');
+    return;
+  }
+  const cost = Math.max(0, finiteNumber(document.getElementById('foodCost')?.value, 0));
+  DB.food.push({
+    icon: '📷',
+    bg: '#E8EDFF',
+    name: pendingFoodAI.name,
+    sub: pendingFoodAI.sub,
+    kcal: pendingFoodAI.kcal,
+    cost,
     date: todayKey()
   });
   saveDB();
   renderFood();
   renderDashboard();
   closeAll();
-  toast('识别结果已保存 480 kcal ✓');
+  toast(`识别结果已保存 ${pendingFoodAI.kcal} kcal ✓`);
+  pendingFoodAI = null;
 }
 
 function addExeAI() {
@@ -558,36 +602,96 @@ function renderWeight() {
   document.getElementById('wProgress').style.width = `${progress.toFixed(0)}%`;
 }
 
-function onFoodPhoto(input) {
-  const file = input.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (event) => {
-    const image = document.getElementById('foodPreview');
-    image.src = event.target.result;
-    image.style.display = 'block';
-    toast('正在识别…');
-    setTimeout(() => {
-      document.getElementById('aiFoodResult').style.display = 'block';
-    }, 900);
-  };
-  reader.readAsDataURL(file);
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('图片读取失败'));
+    reader.readAsDataURL(file);
+  });
 }
 
-function onWatchShot(input) {
+function loadImage(source) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('图片解码失败'));
+    image.src = source;
+  });
+}
+
+async function compressImageForAI(file) {
+  const source = await readFileAsDataUrl(file);
+  const image = await loadImage(source);
+  const maxSizes = [320, 280, 240, 200];
+  const qualities = [0.55, 0.45, 0.35, 0.28];
+  let best = source;
+
+  for (const maxSize of maxSizes) {
+    const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    const context = canvas.getContext('2d');
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    for (const quality of qualities) {
+      const dataUrl = canvas.toDataURL('image/jpeg', quality);
+      if (dataUrl.length < best.length || best === source) best = dataUrl;
+      if (dataUrl.length <= 7800) return dataUrl;
+    }
+  }
+
+  if (best.length > 8192) throw new Error('图片压缩后仍过大，请重新截图或选择较小的照片');
+  return best;
+}
+
+async function onFoodPhoto(input) {
   const file = input.files[0];
   if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (event) => {
-    const image = document.getElementById('watchPreview');
-    image.src = event.target.result;
-    image.style.display = 'block';
-    toast('正在识别…');
-    setTimeout(() => {
-      document.getElementById('aiWatchResult').style.display = 'block';
-    }, 900);
-  };
-  reader.readAsDataURL(file);
+  const preview = document.getElementById('foodPreview');
+  const resultBox = document.getElementById('aiFoodResult');
+  const resultText = document.getElementById('aiFoodResultText');
+
+  try {
+    const previewUrl = await readFileAsDataUrl(file);
+    preview.src = previewUrl;
+    preview.style.display = 'block';
+    toast('DeepSeek 正在识别食物…');
+    const imageDataUrl = await compressImageForAI(file);
+    const result = await callDeepSeekAnalyze('food-image', {
+      imageDataUrl,
+      mealType: document.querySelector('#mealType .on')?.textContent || ''
+    });
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(String(result.text).replace(/^```json\s*|\s*```$/g, '').trim());
+    } catch {
+      parsed = null;
+    }
+
+    const foods = Array.isArray(parsed?.foods) ? parsed.foods : [];
+    const detail = foods.length
+      ? foods.map((item) => `${item.name || '食物'} ${item.portion || ''} ${Math.round(finiteNumber(item.kcal, 0))} kcal`).join('；')
+      : (parsed?.description || result.text);
+    const totalKcal = Math.max(0, Math.round(finiteNumber(parsed?.totalKcal, foods.reduce((sum, item) => sum + finiteNumber(item.kcal, 0), 0))));
+    if (!totalKcal) throw new Error('没有识别出食物，请换一张更清晰的照片');
+
+    pendingFoodAI = {
+      name: foods.length ? foods.map((item) => item.name || '食物').join(' + ') : '照片识别食物',
+      sub: `${detail}${parsed?.proteinG !== undefined ? ` · 蛋白${Math.round(parsed.proteinG)}g` : ''}`.slice(0, 180),
+      kcal: totalKcal
+    };
+    resultText.innerHTML = `检测到：<b>${escapeHtml(pendingFoodAI.name)}</b><br>${escapeHtml(detail)}<br>总热量约 <b>${totalKcal} kcal</b>${parsed?.proteinG !== undefined ? ` · 蛋白质 ${Math.round(parsed.proteinG)}g` : ''}`;
+    resultBox.style.display = 'block';
+  } catch (error) {
+    console.error('Food image recognition failed', error);
+    pendingFoodAI = null;
+    resultText.textContent = `识别失败：${error.message}`;
+    resultBox.style.display = 'block';
+    toast(`照片识别失败：${error.message}`);
+  }
 }
 
 function renderHabits() {
@@ -667,32 +771,6 @@ function formatAiText(text) {
   return escapeHtml(text).replace(/\n/g, '<br>');
 }
 
-function buildDailyAIData() {
-  const metrics = getMetrics();
-  const habits = DB.habits[todayKey()] || [];
-  return {
-    date: todayKey(),
-    metrics: {
-      bmr: metrics.bmr,
-      tdee: metrics.tdee,
-      deficitGoal: metrics.deficit,
-      intakeTarget: metrics.intakeTarget
-    },
-    food: getTodayFood().map((item) => ({ name: item.name, kcal: item.kcal, cost: item.cost })),
-    exercise: getTodayExercise().map((item) => ({ name: item.name, kcal: item.kcal })),
-    waterMl: finiteNumber(DB.water[todayKey()], 0),
-    habits: HABITS
-      .map((habit, index) => habits.includes(index) ? habit[1] : null)
-      .filter(Boolean),
-    latestWeight: DB.weight.length ? DB.weight[DB.weight.length - 1] : null,
-    profile: {
-      height: DB.profile.height,
-      targetWeight: DB.profile.targetWeight,
-      targetDate: DB.profile.targetDate
-    }
-  };
-}
-
 function buildCostAIData(data = buildCostData(currentCostPeriod)) {
   return {
     period: currentCostPeriod,
@@ -726,38 +804,6 @@ async function callDeepSeekAnalyze(action, data) {
   if (result?.error) throw new Error(result.error);
   if (!result?.text) throw new Error('DeepSeek 没有返回分析内容');
   return result;
-}
-
-async function generateDailyAI() {
-  const button = document.getElementById('dailyAiBtn');
-  const element = document.getElementById('aiSummary');
-  const payload = buildDailyAIData();
-  if (button) {
-    button.disabled = true;
-    button.textContent = '分析中…';
-  }
-  if (element) element.innerHTML = 'DeepSeek 正在分析今日记录，请稍候…';
-
-  try {
-    const result = await callDeepSeekAnalyze('daily-summary', payload);
-    DB.ai.daily = {
-      text: result.text,
-      signature: aiSignature(payload),
-      generatedAt: new Date().toISOString()
-    };
-    saveDB();
-    renderDashboard();
-    toast('AI 今日小结已更新');
-  } catch (error) {
-    console.error('DeepSeek daily summary failed', error);
-    renderDashboard();
-    toast(`AI 分析失败：${error.message}`);
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = '重新生成';
-    }
-  }
 }
 
 async function generateCostAI() {
@@ -806,27 +852,6 @@ function renderDashboard() {
   setRing('ringCal', 'ringCalText', foodCalories, calorieTarget);
   setRing('ringExe', 'ringExeText', exerciseCalories, 400);
   setRing('ringGap', 'ringGapText', deficit, gapTarget);
-
-  const element = document.getElementById('aiSummary');
-  const payload = buildDailyAIData();
-  const cached = DB.ai.daily;
-  if (cached?.text && cached.signature === aiSignature(payload)) {
-    element.innerHTML = formatAiText(cached.text);
-    return;
-  }
-  if (!foodCalories && !exerciseCalories) {
-    element.innerHTML = '今天还没有记录。添加饮食和运动后，这里会实时汇总你的热量数据。';
-    return;
-  }
-
-  const remaining = calorieTarget - foodCalories;
-  element.innerHTML = `
-    今天已摄入 <b>${foodCalories} kcal</b>，运动消耗 <b>${exerciseCalories} kcal</b>。
-    当前热量缺口约 <b>${deficit} kcal</b>。<br>
-    ${remaining > 0
-      ? `按当前计划，今天还可摄入约 <b>${remaining} kcal</b>。`
-      : `今天已超过计划摄入 <b>${Math.abs(remaining)} kcal</b>，可通过轻度活动平衡。`}
-  `;
 }
 
 function setRing(circleId, textId, value, target) {
