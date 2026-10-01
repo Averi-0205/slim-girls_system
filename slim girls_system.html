@@ -146,9 +146,52 @@ input:focus,select:focus{border-color:var(--primary)}
 .weight-big .delta.up{color:var(--red)}
 .empty-tip{text-align:center;color:var(--text-sub);font-size:12px;padding:22px 0}
 .toast{position:fixed;top:18%;left:50%;transform:translateX(-50%);background:rgba(31,36,48,.88);color:#fff;font-size:13px;padding:10px 20px;border-radius:24px;z-index:999;display:none;white-space:nowrap}
+/* ===== 登录 ===== */
+body.auth-locked{overflow:hidden}
+.auth-gate{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px;background:linear-gradient(145deg,#E9EDFF 0%,#F8F9FD 52%,#EEF9F3 100%)}
+.auth-gate[hidden]{display:none}
+.auth-card{width:100%;max-width:390px;background:#fff;border:1px solid rgba(79,109,245,.08);border-radius:22px;box-shadow:0 18px 60px rgba(31,36,48,.14);padding:28px 24px 22px}
+.auth-logo{width:58px;height:58px;margin:0 auto 12px;border-radius:18px;background:linear-gradient(135deg,#4F6DF5,#34C77B);display:flex;align-items:center;justify-content:center;font-size:28px;color:#fff;box-shadow:0 10px 24px rgba(79,109,245,.28)}
+.auth-card h2{text-align:center;font-size:24px;letter-spacing:0;margin-bottom:5px}
+.auth-card .auth-sub{text-align:center;color:var(--text-sub);font-size:12px;line-height:1.6;margin-bottom:20px}
+.auth-tabs{display:grid;grid-template-columns:1fr 1fr;background:#F1F3F9;border-radius:12px;padding:4px;margin-bottom:18px}
+.auth-tabs button{border:none;background:transparent;padding:9px;border-radius:9px;font:inherit;font-size:13px;font-weight:700;color:var(--text-sub);cursor:pointer}
+.auth-tabs button.on{background:#fff;color:var(--primary);box-shadow:0 2px 8px rgba(31,36,48,.08)}
+.auth-error{display:none;background:#FDECEC;color:var(--red);font-size:12px;line-height:1.5;border-radius:10px;padding:10px 12px;margin-bottom:12px}
+.auth-error.show{display:block}
+.auth-error.success{background:#E5F8EF;color:#208A55}
+.auth-note{text-align:center;color:var(--text-sub);font-size:11px;line-height:1.6;margin-top:14px}
+.sync-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:5px;vertical-align:1px}
+.sync-dot.saving{background:var(--yellow)}
+.sync-dot.error{background:var(--red)}
 </style>
 </head>
-<body>
+<body class="auth-locked">
+<div class="auth-gate" id="authGate">
+  <div class="auth-card">
+    <div class="auth-logo">🌿</div>
+    <h2>轻盈</h2>
+    <p class="auth-sub">登录后，你的健康记录将安全同步到 Supabase</p>
+    <div class="auth-tabs">
+      <button type="button" class="on" id="tabLogin" onclick="setAuthMode('login')">登录</button>
+      <button type="button" id="tabRegister" onclick="setAuthMode('register')">注册</button>
+    </div>
+    <form id="authForm" onsubmit="handleAuthSubmit(event)">
+      <div class="auth-error" id="authError"></div>
+      <div class="field">
+        <label for="authEmail">邮箱</label>
+        <input type="email" id="authEmail" autocomplete="email" placeholder="name@example.com" required>
+      </div>
+      <div class="field">
+        <label for="authPassword">密码</label>
+        <input type="password" id="authPassword" autocomplete="current-password" minlength="6" placeholder="至少 6 位" required>
+      </div>
+      <button class="btn" id="authSubmitBtn" type="submit">登录并同步</button>
+    </form>
+    <p class="auth-note" id="authHint">没有账号？切换到“注册”创建账号。</p>
+  </div>
+</div>
+
 <div class="phone">
 
   <!-- ================= 顶部（首页） ================= -->
@@ -157,15 +200,15 @@ input:focus,select:focus{border-color:var(--primary)}
     <div class="date" id="hdDate">10月1日 星期三</div>
     <div class="rings">
       <div class="ring-item">
-        <div class="ring"><svg width="64" height="64"><circle cx="32" cy="32" r="27" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="6"/><circle id="ringCal" cx="32" cy="32" r="27" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-dasharray="169.6" stroke-dashoffset="60"/></svg><div class="num">1320<span>/1850</span></div></div>
+        <div class="ring"><svg width="64" height="64"><circle cx="32" cy="32" r="27" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="6"/><circle id="ringCal" cx="32" cy="32" r="27" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-dasharray="169.6" stroke-dashoffset="60"/></svg><div class="num" id="ringCalText">0<span>/1850</span></div></div>
         <p>摄入 kcal</p>
       </div>
       <div class="ring-item">
-        <div class="ring"><svg width="64" height="64"><circle cx="32" cy="32" r="27" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="6"/><circle id="ringExe" cx="32" cy="32" r="27" fill="none" stroke="#9FF0C0" stroke-width="6" stroke-linecap="round" stroke-dasharray="169.6" stroke-dashoffset="40"/></svg><div class="num">320<span>/400</span></div></div>
+        <div class="ring"><svg width="64" height="64"><circle cx="32" cy="32" r="27" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="6"/><circle id="ringExe" cx="32" cy="32" r="27" fill="none" stroke="#9FF0C0" stroke-width="6" stroke-linecap="round" stroke-dasharray="169.6" stroke-dashoffset="40"/></svg><div class="num" id="ringExeText">0<span>/400</span></div></div>
         <p>运动 kcal</p>
       </div>
       <div class="ring-item">
-        <div class="ring"><svg width="64" height="64"><circle cx="32" cy="32" r="27" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="6"/><circle id="ringGap" cx="32" cy="32" r="27" fill="none" stroke="#FFD37E" stroke-width="6" stroke-linecap="round" stroke-dasharray="169.6" stroke-dashoffset="25"/></svg><div class="num">850<span>/500</span></div></div>
+        <div class="ring"><svg width="64" height="64"><circle cx="32" cy="32" r="27" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="6"/><circle id="ringGap" cx="32" cy="32" r="27" fill="none" stroke="#FFD37E" stroke-width="6" stroke-linecap="round" stroke-dasharray="169.6" stroke-dashoffset="25"/></svg><div class="num" id="ringGapText">0<span>/500</span></div></div>
         <p>热量缺口</p>
       </div>
     </div>
@@ -193,11 +236,11 @@ input:focus,select:focus{border-color:var(--primary)}
   <div class="page" id="page-weight">
     <div class="card">
       <div class="weight-big">
-        <div class="num" id="wNow">68.2<small> kg</small></div>
-        <div class="delta down" id="wDelta">▼ 较上周 -0.6 kg</div>
+        <div class="num" id="wNow">--<small> kg</small></div>
+        <div class="delta down" id="wDelta">还没有体重记录</div>
       </div>
-      <div class="stat-row" style="margin-top:10px"><span>目标 60.0 kg</span><span id="wRemain">还需 -8.2 kg</span><span>预计 2027-03 达成</span></div>
-      <div class="progress orange" style="margin-top:8px"><i style="width:38%"></i></div>
+      <div class="stat-row" style="margin-top:10px"><span id="wTarget">目标 60.0 kg</span><span id="wRemain">记录后计算</span><span id="wDate">未设置日期</span></div>
+      <div class="progress orange" style="margin-top:8px"><i id="wProgress" style="width:0%"></i></div>
       <button class="btn" style="margin-top:14px" onclick="openModal('modal-weight')">⚖️ 记录今日体重</button>
       <div class="btn-row">
         <button class="btn secondary" onclick="openModal('modal-body')">📏 围度体脂</button>
@@ -237,10 +280,10 @@ input:focus,select:focus{border-color:var(--primary)}
       <div class="habit-grid" id="habitGrid"></div>
     </div>
     <div class="card">
-      <h3>💧 饮水记录 <small>今日 1200 / 2000 ml</small></h3>
-      <div class="progress" style="height:12px"><i style="width:60%;background:#4FA9F5"></i></div>
+      <h3>💧 饮水记录 <small id="waterText">今日 0 / 2000 ml</small></h3>
+      <div class="progress" style="height:12px"><i id="waterProgress" style="width:0%;background:#4FA9F5"></i></div>
       <div class="btn-row">
-        <button class="btn secondary" onclick="toast('+250ml 💧')">+ 一杯 250ml</button>
+        <button class="btn secondary" onclick="addWater(250)">+ 一杯 250ml</button>
         <button class="btn secondary" onclick="openModal('modal-water')">自定义</button>
       </div>
     </div>
@@ -264,8 +307,8 @@ input:focus,select:focus{border-color:var(--primary)}
     </div>
     <div class="card">
       <h3>📝 情绪性进食日记</h3>
-      <textarea rows="2" placeholder="记录此刻的心情与进食冲动…"></textarea>
-      <div class="btn-row"><button class="btn" onclick="toast('日记已保存，AI 将分析你的进食模式 ✨')">保存日记</button></div>
+      <textarea rows="2" id="diaryText" placeholder="记录此刻的心情与进食冲动…"></textarea>
+      <div class="btn-row"><button class="btn" onclick="saveDiary()">保存日记</button></div>
       <p style="font-size:11px;color:var(--text-sub);margin-top:10px">🧠 AI 洞察：你过去 2 周在「工作压力大」的日子平均多摄入 240 kcal，建议准备低热量替代零食。</p>
     </div>
   </div>
@@ -354,28 +397,28 @@ input:focus,select:focus{border-color:var(--primary)}
   <div class="page" id="page-me">
     <div class="card" style="display:flex;align-items:center;gap:14px">
       <div style="width:58px;height:58px;border-radius:50%;background:linear-gradient(135deg,#4F6DF5,#7C5CFF);display:flex;align-items:center;justify-content:center;font-size:26px;color:#fff">🦊</div>
-      <div style="flex:1"><b style="font-size:16px">小鹿同学</b><p style="font-size:12px;color:var(--text-sub)">减脂期 · 第 42 天 · 已减 3.8kg</p></div>
+      <div style="flex:1"><b style="font-size:16px" id="profileName">轻盈用户</b><p style="font-size:12px;color:var(--text-sub)" id="profileMeta">登录账户 · 数据已加密隔离</p></div>
       <span class="tag orange">LV.4</span>
     </div>
     <div class="card">
       <h3>👤 个人档案 <small>BMR 自动计算</small></h3>
       <div class="grid2">
-        <div class="field"><label>身高 cm</label><input value="165"></div>
-        <div class="field"><label>当前体重 kg</label><input value="68.2"></div>
-        <div class="field"><label>目标体重 kg</label><input value="60.0"></div>
-        <div class="field"><label>目标日期</label><input type="date" value="2027-03-01"></div>
+        <div class="field"><label>身高 cm</label><input type="number" id="profileHeight" value="165"></div>
+        <div class="field"><label>当前体重 kg</label><input type="number" step="0.1" id="profileWeight" value=""></div>
+        <div class="field"><label>目标体重 kg</label><input type="number" step="0.1" id="profileTarget" value="60.0"></div>
+        <div class="field"><label>目标日期</label><input type="date" id="profileTargetDate"></div>
       </div>
-      <div class="stat-row" style="margin-bottom:10px"><span>基础代谢 BMR：1390 kcal</span><span>每日总消耗 TDEE：1850 kcal</span></div>
+      <div class="stat-row" style="margin-bottom:10px"><span id="profileBmr">基础代谢 BMR：--</span><span id="profileTdee">每日总消耗 TDEE：--</span></div>
       <div class="field"><label>每日热量缺口目标</label>
-        <select><option>轻度 300 kcal（每月约 -1.2kg）</option><option selected>标准 500 kcal（每月约 -2kg）</option><option>激进 700 kcal（需医生指导）</option></select>
+        <select id="profileDeficit"><option value="300">轻度 300 kcal（每月约 -1.2kg）</option><option value="500" selected>标准 500 kcal（每月约 -2kg）</option><option value="700">激进 700 kcal（需医生指导）</option></select>
       </div>
-      <button class="btn" onclick="toast('档案已更新 ✓')">保存档案</button>
+      <button class="btn" onclick="saveProfile()">保存档案</button>
     </div>
     <div class="card">
       <h3>⌚ 设备与数据连接</h3>
       <div class="set-row"><div>Apple Watch / HealthKit<small>步数 · 心率 · 睡眠 · 体能训练自动同步</small></div><div class="switch on" onclick="this.classList.toggle('on')"></div></div>
       <div class="set-row"><div>截图导入<small>上传 Watch 健身截图，AI 识别运动数据</small></div><div class="switch" onclick="this.classList.toggle('on')"></div></div>
-      <div class="set-row"><div>Supabase 云端同步<small>多设备数据互通</small></div><div class="switch" onclick="this.classList.toggle('on')"></div></div>
+      <div class="set-row"><div>Supabase 云端同步<small id="syncStatus"><span class="sync-dot"></span>等待登录</small></div><div class="switch on"></div></div>
     </div>
     <div class="card">
       <h3>🔔 提醒设置</h3>
@@ -397,10 +440,10 @@ input:focus,select:focus{border-color:var(--primary)}
     </div>
     <div class="card">
       <h3>🔒 隐私与数据</h3>
-      <div class="set-row"><div>生物数据端到端加密<small>体重 · 围度 · 健康数据</small></div><div class="switch on" onclick="this.classList.toggle('on')"></div></div>
-      <div class="set-row"><div>数据本地存储<small>卸载前请先导出备份</small></div><div class="switch on" onclick="this.classList.toggle('on')"></div></div>
+      <div class="set-row"><div>HTTPS 加密传输<small>体重 · 围度 · 健康数据</small></div><div class="switch on"></div></div>
+      <div class="set-row"><div>云端数据隔离<small>每位用户只能访问自己的记录</small></div><div class="switch on"></div></div>
       <div class="set-row"><div>匿名参与健康研究<small>帮助改进 AI 模型</small></div><div class="switch" onclick="this.classList.toggle('on')"></div></div>
-      <div class="btn-row" style="margin-top:12px"><button class="btn danger" onclick="toast('演示模式：数据已清空（此处二次确认）')">清空所有数据</button></div>
+      <div class="btn-row" style="margin-top:12px"><button class="btn danger" onclick="clearAllData()">清空所有数据</button></div>
     </div>
     <div class="card">
       <h3>🏆 里程碑与奖励设置 <small>达成自动解锁</small></h3>
@@ -415,7 +458,8 @@ input:focus,select:focus{border-color:var(--primary)}
       <div class="field"><label>AI 识别模式</label><select><option>拍照识别食物 + 估算克重</option><option>仅识别食物种类</option></select></div>
       <button class="btn secondary" onclick="toast('连接测试成功 ✓ DeepSeek-V3 已就绪')">测试连接</button>
     </div>
-    <p style="text-align:center;font-size:11px;color:var(--text-sub);padding:10px 0 20px">轻盈 v0.1.0 · 开源 · Made with 💙</p>
+    <div class="btn-row"><button class="btn secondary" onclick="signOutUser()">退出登录</button></div>
+    <p style="text-align:center;font-size:11px;color:var(--text-sub);padding:10px 0 20px">轻盈 v0.2.0 · Supabase 云端版</p>
   </div>
 
   </div><!-- /content -->
@@ -442,7 +486,7 @@ input:focus,select:focus{border-color:var(--primary)}
       <button class="btn" style="padding:16px" onclick="closeAll();openModal('modal-food')">🍚 记饮食</button>
       <button class="btn secondary" style="padding:16px" onclick="closeAll();openModal('modal-exe')">🏃 记运动</button>
       <button class="btn secondary" style="padding:16px" onclick="closeAll();openModal('modal-weight')">⚖️ 记体重</button>
-      <button class="btn secondary" style="padding:16px" onclick="toast('喝水 +250ml 💧')">💧 记饮水</button>
+      <button class="btn secondary" style="padding:16px" onclick="closeAll();addWater(250)">💧 记饮水</button>
     </div>
   </div>
 </div>
@@ -513,7 +557,7 @@ input:focus,select:focus{border-color:var(--primary)}
     <h3>⚖️ 记录体重</h3>
     <div class="field"><label>今日体重（kg）</label><input type="number" step="0.1" id="wInput" placeholder="68.2"></div>
     <div class="field"><label>备注</label>
-      <div class="quick"><span>晨起空腹</span><span>排便后</span><span>运动后</span><span>生理期</span></div>
+      <div class="quick" id="weightNote"><span class="on">晨起空腹</span><span>排便后</span><span>运动后</span><span>生理期</span></div>
     </div>
     <button class="btn" onclick="saveWeight()">保存</button>
   </div>
@@ -524,12 +568,12 @@ input:focus,select:focus{border-color:var(--primary)}
   <div class="modal">
     <h3>📏 围度 & 体脂</h3>
     <div class="grid2">
-      <div class="field"><label>腰围 cm</label><input type="number" value="82"></div>
-      <div class="field"><label>臀围 cm</label><input type="number" value="96"></div>
-      <div class="field"><label>大腿围 cm</label><input type="number" value="54"></div>
-      <div class="field"><label>体脂率 %</label><input type="number" step="0.1" value="27.4"></div>
+      <div class="field"><label>腰围 cm</label><input type="number" id="bodyWaist" value=""></div>
+      <div class="field"><label>臀围 cm</label><input type="number" id="bodyHip" value=""></div>
+      <div class="field"><label>大腿围 cm</label><input type="number" id="bodyThigh" value=""></div>
+      <div class="field"><label>体脂率 %</label><input type="number" step="0.1" id="bodyFat" value=""></div>
     </div>
-    <button class="btn" onclick="closeAll();toast('围度已保存 ✓')">保存</button>
+    <button class="btn" onclick="saveBodyMetrics()">保存</button>
   </div>
 </div>
 
@@ -548,8 +592,8 @@ input:focus,select:focus{border-color:var(--primary)}
 <div class="modal-mask" id="modal-water" onclick="maskClose(event,this)">
   <div class="modal">
     <h3>💧 饮水记录</h3>
-    <div class="field"><label>饮水量（ml）</label><input type="number" placeholder="500"></div>
-    <button class="btn" onclick="closeAll();toast('饮水已记录 💧')">保存</button>
+    <div class="field"><label>饮水量（ml）</label><input type="number" id="waterInput" placeholder="500"></div>
+    <button class="btn" onclick="saveWater()">保存</button>
   </div>
 </div>
 
@@ -591,177 +635,7 @@ input:focus,select:focus{border-color:var(--primary)}
 
 <div class="toast" id="toast"></div>
 
-<script>
-/* ===== 数据 ===== */
-let DB = JSON.parse(localStorage.getItem('qingying')||'null') || {
-  food:[
-    {icon:'🍳',bg:'#FEF3E2',name:'早餐 · 燕麦牛奶+水煮蛋',sub:'07:32 · 蛋白 18g',kcal:320},
-    {icon:'🥗',bg:'#E8EDFF',name:'午餐 · 鸡胸沙拉+糙米饭',sub:'12:15 · 蛋白 35g',kcal:480},
-    {icon:'🍎',bg:'#E5F8EF',name:'加餐 · 苹果一个',sub:'15:40 · 190g',kcal:95},
-  ],
-  exe:[
-    {icon:'🏃',bg:'#E8EDFF',name:'户外跑步 5.2km',sub:'06:50 · 心率 148',kcal:320},
-  ],
-  weight:[68.2]
-};
-function saveDB(){localStorage.setItem('qingying',JSON.stringify(DB))}
-
-/* ===== 渲染 ===== */
-function renderFood(){
-  const el=document.getElementById('foodList');
-  if(!DB.food.length){el.innerHTML='<div class="empty-tip">今天还没记录饮食，点右上角添加 🍽️</div>';return}
-  el.innerHTML=DB.food.map((f,i)=>`<div class="item"><div class="icon" style="background:${f.bg}">${f.icon}</div><div class="info"><b>${f.name}</b><span>${f.sub}</span></div><div class="right">${f.kcal}<span>kcal</span></div><button class="btn ghost small" onclick="delFood(${i})">✕</button></div>`).join('');
-}
-function renderExe(){
-  const el=document.getElementById('exeList');
-  if(!DB.exe.length){el.innerHTML='<div class="empty-tip">今天还没有运动记录，加油！🏃</div>';return}
-  el.innerHTML=DB.exe.map((x,i)=>`<div class="item"><div class="icon" style="background:${x.bg}">${x.icon}</div><div class="info"><b>${x.name}</b><span>${x.sub}</span></div><div class="right">${x.kcal}<span>kcal</span></div><button class="btn ghost small" onclick="delExe(${i})">✕</button></div>`).join('');
-}
-function delFood(i){DB.food.splice(i,1);saveDB();renderFood();toast('已删除')}
-function delExe(i){DB.exe.splice(i,1);saveDB();renderExe();toast('已删除')}
-
-/* 食物库 */
-const FOODS=[['米饭 100g','116 kcal'],['鸡胸肉 100g','133 kcal'],['鸡蛋 1个','76 kcal'],['苹果 1个','95 kcal'],['牛奶 250ml','163 kcal'],['牛肉 100g','125 kcal'],['香蕉 1根','105 kcal'],['红薯 100g','86 kcal'],['面条 100g','137 kcal'],['酸奶 200g','144 kcal'],['西兰花 100g','34 kcal'],['玉米 1根','112 kcal']];
-function renderFoodOpts(q=''){
-  q=q.trim();
-  const list=FOODS.filter(f=>!q||f[0].includes(q));
-  document.getElementById('foodOpts').innerHTML=list.map(f=>`<div class="food-opt" onclick="pickFood('${f[0]}','${f[1]}')"><b>${f[0]}</b><span style="font-size:12px;color:var(--text-sub)">${f[1]}</span></div>`).join('')||'<div class="empty-tip">未找到食物，可创建自定义食物</div>';
-}
-function pickFood(name,kcalStr){
-  const kcal=parseInt(kcalStr);
-  DB.food.push({icon:'🍽️',bg:'#F1F3F9',name,sub:'手动添加',kcal});
-  saveDB();renderFood();closeAll();toast(`已记录：${name} ${kcalStr} ✓`)
-}
-function addFoodAI(){
-  DB.food.push({icon:'🥗',bg:'#E8EDFF',name:'AI识别 · 鸡胸沙拉+糙米饭',sub:'拍照识别 · 420g · 蛋白35g',kcal:480});
-  saveDB();renderFood();closeAll();toast('AI 识别结果已记录 480 kcal ✓')
-}
-function addExeAI(){
-  DB.exe.push({icon:'⌚',bg:'#E8EDFF',name:'户外跑步 5.2km（Watch识别）',sub:'32分钟 · 心率148',kcal:320});
-  saveDB();renderExe();closeAll();toast('运动数据已同步 ⌚')
-}
-function addExe(){
-  const min=document.getElementById('exeMin').value||30;
-  const kcal=document.getElementById('exeKcal').value||200;
-  const type=document.querySelector('#exeType .on')?.textContent||'跑步';
-  DB.exe.push({icon:'🏃',bg:'#E8EDFF',name:`${type} ${min}分钟`,sub:'手动记录',kcal:+kcal});
-  saveDB();renderExe();closeAll();toast(`已记录运动 ${kcal} kcal ✓`)
-}
-function saveWeight(){
-  const v=document.getElementById('wInput').value;
-  if(!v){toast('请输入体重');return}
-  DB.weight.push(+v);saveDB();
-  document.getElementById('wNow').innerHTML=`${v}<small> kg</small>`;
-  closeAll();toast('体重已记录，继续加油 ⚖️');
-}
-
-/* 拍照识别 */
-function onFoodPhoto(inp){
-  const f=inp.files[0];if(!f)return;
-  const r=new FileReader();
-  r.onload=e=>{
-    const img=document.getElementById('foodPreview');
-    img.src=e.target.result;img.style.display='block';
-    toast('AI 识别中…');
-    setTimeout(()=>{document.getElementById('aiFoodResult').style.display='block'},1200);
-  };
-  r.readAsDataURL(f);
-}
-function onWatchShot(inp){
-  const f=inp.files[0];if(!f)return;
-  const r=new FileReader();
-  r.onload=e=>{
-    const img=document.getElementById('watchPreview');
-    img.src=e.target.result;img.style.display='block';
-    toast('识别 Watch 数据…');
-    setTimeout(()=>{document.getElementById('aiWatchResult').style.display='block'},1200);
-  };
-  r.readAsDataURL(f);
-}
-
-/* 习惯打卡 */
-const HABITS=[['💧','喝水','8杯'],['🏃','运动','30′'],['😴','早睡','23:00'],['🧘','冥想','10′'],['🥗','蔬菜','300g'],['🚶','万步','10k'],['📵','少糖','✓'],['📖','日记','1条']];
-function renderHabits(){
-  document.getElementById('habitGrid').innerHTML=HABITS.map(h=>`<div class="habit" onclick="this.classList.toggle('on');toast(this.classList.contains('on')?'打卡成功 ✓':'已取消')"><span class="ic">${h[0]}</span><p>${h[1]}</p><small>${h[2]}</small></div>`).join('');
-}
-
-/* AI 小结 */
-function aiSummary(){
-  const f=DB.food.reduce((s,x)=>s+x.kcal,0);
-  document.getElementById('aiSummary').innerHTML=
-  `今天已摄入 <b>${f} kcal</b>，运动消耗 <b>320 kcal</b>。当前热量缺口 <b>850 kcal</b>，超过目标 70%！🎉<br>晚餐建议控制在 <b>500 kcal</b> 以内。蛋白质目前 53g，建议补充 20g 优质蛋白（约 100g 鸡胸肉）。`;
-}
-
-/* 导航 */
-function go(p,btn){
-  document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
-  document.getElementById('page-'+p).classList.add('active');
-  document.querySelectorAll('.tabbar button').forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
-  window.scrollTo(0,0);
-}
-
-/* 弹层 */
-function openModal(id){document.getElementById(id).classList.add('show')}
-function closeAll(){document.querySelectorAll('.modal-mask').forEach(m=>m.classList.remove('show'))}
-function maskClose(e,el){if(e.target===el)el.classList.remove('show')}
-
-/* toast */
-let tTimer;
-function toast(msg){
-  const t=document.getElementById('toast');
-  t.textContent=msg;t.style.display='block';
-  clearTimeout(tTimer);tTimer=setTimeout(()=>t.style.display='none',1800);
-}
-
-/* 日期 */
-const now=new Date();
-const weeks=['日','一','二','三','四','五','六'];
-document.getElementById('hdDate').textContent=`${now.getMonth()+1}月${now.getDate()}日 星期${weeks[now.getDay()]}`;
-
-/* quick 标签选择 */
-document.querySelectorAll('.quick').forEach(q=>{
-  q.addEventListener('click',e=>{
-    if(e.target.tagName==='SPAN'){q.querySelectorAll('span').forEach(s=>s.classList.remove('on'));e.target.classList.add('on')}
-  });
-});
-
-/* ===== 里程碑与奖励 ===== */
-let MS = JSON.parse(localStorage.getItem('qingying_ms')||'null') || [
-  {type:'🏅 累计减重', val:5, unit:'kg', reward:'一顿火锅 🍲', rtype:'🍔 美食额度', done:true, cur:4},
-  {type:'🏅 累计减重', val:10, unit:'kg', reward:'新跑鞋 👟', rtype:'🛍️ 购物基金', done:false, cur:4},
-  {type:'🔥 连续打卡', val:30, unit:'天', reward:'周末郊游 🌿', rtype:'🎁 实物奖励', done:false, cur:12},
-];
-function saveMS(){localStorage.setItem('qingying_ms',JSON.stringify(MS))}
-function renderMS(){
-  const pct = m=>Math.min(100, Math.round(m.cur/m.val*100));
-  const rows = MS.map((m,i)=>`
-    <div class="item">
-      <div class="icon" style="background:${m.done?'#E5F8EF':'#F1F3F9'}">${m.done?'✅':'🏆'}</div>
-      <div class="info"><b>${m.type} ${m.val}${m.unit}</b><span>奖励：${m.reward} · ${m.rtype}</span>
-        <div class="progress ${m.done?'green':'orange'}"><i style="width:${pct(m)}%"></i></div>
-        <div class="stat-row"><span>进度 ${m.cur}/${m.val}${m.unit}</span><span>${pct(m)}%</span></div>
-      </div>
-      <button class="btn ghost small" onclick="delMS(${i})">✕</button>
-    </div>`).join('');
-  document.getElementById('msList').innerHTML = rows;
-  document.getElementById('msListModal').innerHTML = rows || '<div class="empty-tip">还没有里程碑，点击下面按钮创建 🏆</div>';
-}
-function delMS(i){MS.splice(i,1);saveMS();renderMS();toast('已删除里程碑')}
-function addMilestone(){
-  const val=document.getElementById('msVal').value;
-  const reward=document.getElementById('msReward').value;
-  if(!val||!reward){toast('请填写目标数值和奖励');return}
-  MS.push({
-    type:document.querySelector('#msType .on').textContent,
-    val:+val, unit:document.getElementById('msUnit').value,
-    reward, rtype:document.querySelector('#msRType .on').textContent,
-    done:false, cur:0
-  });
-  saveMS();renderMS();closeAll();toast('里程碑已创建，去达成它！🏆');
-}
-renderMS();
-renderFood();renderExe();renderFoodOpts();renderHabits();aiSummary();
-</script>
+<script src="supabase.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
