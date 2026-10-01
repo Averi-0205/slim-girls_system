@@ -2,7 +2,17 @@ import { createClient } from 'npm:@supabase/supabase-js@2.117.2';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': [
+    'authorization',
+    'x-client-info',
+    'apikey',
+    'content-type',
+    'x-supabase-api-version',
+    'x-supabase-client-platform',
+    'x-supabase-client-platform-version',
+    'x-supabase-client-runtime',
+    'x-supabase-client-runtime-version'
+  ].join(', '),
   'Access-Control-Allow-Methods': 'POST, OPTIONS'
 };
 
@@ -109,8 +119,9 @@ Deno.serve(async (request) => {
       body: JSON.stringify({
         model,
         messages: buildMessages(action, body.data),
+        thinking: { type: 'disabled' },
         temperature: action === 'cost-analysis' ? 0.35 : 0.4,
-        max_tokens: 900,
+        max_tokens: 1200,
         stream: false
       })
     });
@@ -129,7 +140,8 @@ Deno.serve(async (request) => {
       }, 502);
     }
 
-    const text = result?.choices?.[0]?.message?.content?.trim();
+    const message = result?.choices?.[0]?.message;
+    const text = String(message?.content || message?.reasoning_content || '').trim();
     if (!text) {
       return jsonResponse({ error: 'DeepSeek returned an empty response', requestId }, 502);
     }
