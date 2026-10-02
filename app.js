@@ -1090,73 +1090,222 @@ function addMilestone() {
   toast('里程碑已创建并同步 🏆');
 }
 
-function parseCsv(text) {
-  const lines = String(text || '').split(/\r?\n/).filter((line) => line.trim());
-  if (!lines.length) return null;
-
-  const header = lines[0];
-  const isAlipay = header.includes('交易分类');
-  const isWechat = header.includes('商品') && header.includes('收/支');
-  if (!isAlipay && !isWechat) return null;
-
-  const rows = [];
-  for (const line of lines.slice(1)) {
-    const columns = line.split(',').map((value) => value.trim().replace(/^"|"$/g, ''));
-    if (isAlipay) {
-      const time = columns[2] || columns[3];
-      const item = columns[8];
-      const amount = columns[9];
-      const direction = columns[10];
-      const status = columns[11];
-      const category = columns[12];
-      if (direction !== '支出' || String(status || '').includes('退款')) continue;
-      if (!String(category || '').match(/餐饮|美食|食品/)) continue;
-      rows.push({
-        date: String(time || '').slice(5, 10),
-        name: item,
-        kcost: parseFloat(amount) || 0,
-        src: 'CSV'
-      });
+function splitCsvLine(line) {
+  const cells = [];
+  let current = '';
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (quoted) {
+      if (char === '"') {
+        if (line[index + 1] === '"') {
+          current += '"';
+          index += 1;
+        } else {
+          quoted = false;
+        }
+      } else {
+        current += char;
+      }
+    } else if (char === '"') {
+      quoted = true;
+    } else if (char === ',') {
+      cells.push(current.trim());
+      current = '';
     } else {
-      const time = columns[0];
-      const item = columns[3];
-      const direction = columns[4];
-      const amount = columns[5];
-      const status = columns[7];
-      if (direction !== '支出' || status !== '支付成功') continue;
-      if (!String(item || '').match(/餐|饭|面|粉|奶茶|咖啡|小吃|超市|便利|菜|肉|水果|外卖|零食/)) continue;
-      rows.push({
-        date: String(time || '').slice(5, 10),
-        name: item,
-        kcost: parseFloat(String(amount || '').replace(/[¥￥,]/g, '')) || 0,
-        src: 'CSV'
-      });
+      current += char;
     }
   }
+  cells.push(current.trim());
+  return cells;
+}
+
+function parseCsv(text) {
+  const lines = String(text || '')
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .filter((line) => line.trim());
+  if (!lines.length) return null;
+
+  // 真实导出的账单前面有若干行说明文字，需要先定位真正的表头
+  let headerIndex = -1;
+  let kind = '';
+  for (let index = 0; index < Math.min(lines.length, 40); index += 1) {
+    const line = lines[index];
+    if (line.includes('交易分类')) {
+      headerIndex = index;
+      kind = 'alipay';
+      break;
+    }
+    if (line.includes('收/支') && line.includes('商品')) {
+      headerIndex = index;
+      kind = 'wechat';
+      break;
+    }
+  }
+  if (headerIndex < 0) return null;
+
+  const header = splitCsvLine(lines[headerIndex]);
+  const column = (...names) => {
+    for (const name of names) {
+      const index = header.findIndex((cell) => cell.includes(name));
+      if (index >= 0) return index;
+    }
+    return -1;
+  };
+
+  const timeIdx = column('交易时间', '交易创建时间', '时间');
+  const itemIdx = column('商品说明', '商品', '交易对方');
+  const amountIdx = column('金额');
+  const directionIdx = column('收/支');
+  const statusIdx = column('交易状态', '当前状态');
+  const categoryIdx = kind === 'alipay' ? column('交易分类') : -1;
+  const todayShort = todayKey().slice(5);
+
+  const rows = [];
+  for (const line of lines.slice(headerIndex + 1)) {
+    const cells = splitCsvLine(line);
+    const pick = (index) => (index >= 0 ? String(cells[index] || '').trim() : '');
+
+    const direction = pick(directionIdx);
+    if (direction && direction !== '支出') continue;
+
+    const status = pick(statusIdx);
+    if (status.includes('退款')) continue;
+    if (kind === 'wechat' && status && !status.includes('支付成功')) continue;
+
+    const category = pick(categoryIdx);
+    if (kind === 'alipay' && category && !/餐饮|美食|食品/.test(category)) continue;
+
+    const name = pick(itemIdx);
+    if (kind === 'wechat' && name && !/餐|饭|面|粉|奶茶|咖啡|小吃|超市|便利|菜|肉|水果|外卖|零食|饮/.test(name)) continue;
+
+    const amount = parseFloat(pick(amountIdx).replace(/[¥￥,\s]/g, ''));
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+
+    const rawTime = pick(timeIdx);
+    const full = rawTime.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    const short = rawTime.match(/(\d{1,2})[-/](\d{1,2})/);
+    const date = full
+      ? `${full[2].padStart(2, '0')}-${full[3].padStart(2, '0')}`
+      : short
+        ? `${short[1].padStart(2, '0')}-${short[2].padStart(2, '0')}`
+        : todayShort;
+
+    rows.push({ date, name: name || '餐饮消费', kcost: amount, src: 'CSV' });
+  }
   return rows;
+}
+
+function showBillResult(html) {
+  const box = document.getElementById('csvResult');
+  if (box) box.style.display = 'block';
+  const message = document.getElementById('csvMsg');
+  if (message) message.innerHTML = html;
+}
+
+function resetBillInputs() {
+  ['billShot', 'billCsv'].forEach((id) => {
+    const input = document.getElementById(id);
+    if (input) input.value = '';
+  });
+}
+
+function describeBillRows(rows) {
+  const total = rows.reduce((sum, item) => sum + finiteNumber(item.kcost, 0), 0);
+  return `共 <b>${rows.length}</b> 条餐饮消费，合计 <b>¥${total.toFixed(2)}</b><br>
+    <span style="font-size:11px;opacity:.7">${rows.slice(0, 6).map((item) => `${escapeHtml(item.date)} ${escapeHtml(item.name)} ¥${finiteNumber(item.kcost, 0).toFixed(1)}`).join('；')}${rows.length > 6 ? ' …' : ''}</span>`;
 }
 
 function onCsvFile(input) {
   const file = input.files[0];
   if (!file) return;
+  pendingBills = [];
+  showBillResult('正在读取账单文件…');
+
   const reader = new FileReader();
+  reader.onerror = () => {
+    showBillResult('⚠️ 文件读取失败，请重新选择。');
+    resetBillInputs();
+  };
   reader.onload = (event) => {
-    const rows = parseCsv(event.target.result);
-    const box = document.getElementById('csvResult');
-    box.style.display = 'block';
-    if (!rows) {
-      pendingBills = [];
-      document.getElementById('csvMsg').innerHTML = '⚠️ 未识别出账单格式。请使用支付宝「账单导出」或微信「下载账单-个人对账」生成的 CSV 文件。';
+    const buffer = event.target.result;
+    let text = '';
+    let encoding = 'UTF-8';
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+    } catch {
+      encoding = 'GBK';
+      try {
+        text = new TextDecoder('gbk').decode(buffer);
+      } catch {
+        text = new TextDecoder('utf-8').decode(buffer);
+        encoding = 'UTF-8(替换字符)';
+      }
+    }
+
+    const rows = parseCsv(text);
+    if (!rows || !rows.length) {
+      showBillResult(`⚠️ 未识别出餐饮条目（编码 ${encoding}）。请使用支付宝「账单导出」或微信「账单下载-用于个人对账」生成的 CSV 文件，不要改动表头。`);
+      resetBillInputs();
       return;
     }
+
     pendingBills = rows;
-    const total = rows.reduce((sum, item) => sum + item.kcost, 0);
-    document.getElementById('csvMsg').innerHTML = `
-      ✅ 解析成功：共 <b>${rows.length}</b> 条餐饮消费，合计 <b>¥${total.toFixed(2)}</b><br>
-      <span style="font-size:11px;opacity:.7">样例：${rows.slice(0, 3).map((item) => `${escapeHtml(item.date)} ${escapeHtml(item.name)} ¥${item.kcost}`).join('；')}${rows.length > 3 ? ' …' : ''}</span>
-    `;
+    showBillResult(`✅ CSV 解析成功（编码 ${encoding}）：${describeBillRows(rows)}<br><span style="font-size:11px;opacity:.7">核对无误后点下方按钮导入。</span>`);
+    resetBillInputs();
   };
-  reader.readAsText(file, 'GBK');
+  reader.readAsArrayBuffer(file);
+}
+
+async function onBillShot(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const preview = document.getElementById('billPreview');
+  pendingBills = [];
+  showBillResult('DeepSeek 正在识别账单截图，请稍候…');
+
+  try {
+    const previewUrl = await readFileAsDataUrl(file);
+    if (preview) {
+      preview.src = previewUrl;
+      preview.style.display = 'block';
+    }
+
+    const imageDataUrl = await compressImageForAI(file);
+    const result = await callDeepSeekAnalyze('bill-image', { imageDataUrl });
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(String(result.text).replace(/^```json\s*|\s*```$/g, '').trim());
+    } catch {
+      parsed = null;
+    }
+
+    const rows = (Array.isArray(parsed?.items) ? parsed.items : [])
+      .map((item) => ({
+        date: String(item?.date || '').trim(),
+        name: String(item?.name || '餐饮消费').trim(),
+        kcost: Math.max(0, finiteNumber(item?.amount, 0)),
+        src: '截图识别'
+      }))
+      .filter((item) => item.kcost > 0);
+
+    if (!rows.length) {
+      showBillResult(`⚠️ 没有识别出餐饮消费条目。${escapeHtml(parsed?.description || '可以换一张更清晰的账单截图，或改用 CSV 导入。')}`);
+      return;
+    }
+
+    pendingBills = rows;
+    showBillResult(`🔍 截图识别结果：${describeBillRows(rows)}<br><span style="font-size:11px;opacity:.7">AI 识别可能有误差，请核对后再导入。</span>`);
+  } catch (error) {
+    console.error('Bill screenshot recognition failed', error);
+    pendingBills = [];
+    showBillResult(`⚠️ 识别失败：${escapeHtml(error.message)}<br><span style="font-size:11px;opacity:.7">可以改用「导入 CSV 账单」。</span>`);
+    toast(`账单识别失败：${error.message}`);
+  } finally {
+    resetBillInputs();
+  }
 }
 
 function confirmCsv() {
@@ -1164,46 +1313,31 @@ function confirmCsv() {
     toast('没有可导入的条目');
     return;
   }
+  const count = pendingBills.length;
   DB.bills = DB.bills.concat(pendingBills);
   pendingBills = [];
   saveDB();
   renderBills();
   drawDual();
   document.getElementById('csvResult').style.display = 'none';
-  toast('账单已导入并同步 ✓');
+  toast(`已导入 ${count} 条餐饮消费 ✓`);
 }
 
-function onBillShot(input) {
-  const file = input.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (event) => {
-    const image = document.getElementById('billPreview');
-    image.src = event.target.result;
-    image.style.display = 'block';
-    toast('正在运行截图识别演示…');
-    setTimeout(() => {
-      const rows = [
-        { date: '10-01', name: '黄焖鸡米饭', kcost: 22, src: '截图演示' },
-        { date: '10-01', name: '瑞幸咖啡', kcost: 15, src: '截图演示' },
-        { date: '09-30', name: '水果捞', kcost: 18, src: '截图演示' }
-      ];
-      pendingBills = rows;
-      document.getElementById('csvResult').style.display = 'block';
-      document.getElementById('csvMsg').innerHTML = `
-        🔍 <b>截图识别演示结果：</b>检测到 ${rows.length} 条餐饮消费，合计 <b>¥${rows.reduce((sum, item) => sum + item.kcost, 0)}</b><br>
-        <span style="font-size:11px;opacity:.7">${rows.map((item) => `${item.date} ${escapeHtml(item.name)} ¥${item.kcost}`).join('；')}</span>
-      `;
-    }, 900);
-  };
-  reader.readAsDataURL(file);
+function cancelCsv() {
+  pendingBills = [];
+  const box = document.getElementById('csvResult');
+  if (box) box.style.display = 'none';
+  const preview = document.getElementById('billPreview');
+  if (preview) preview.style.display = 'none';
+  resetBillInputs();
+  toast('已取消导入');
 }
 
 function renderBills() {
   const element = document.getElementById('billList');
   if (!element) return;
   if (!DB.bills.length) {
-    element.innerHTML = '<div class="empty-tip">暂无账单，试试上方 CSV 导入 📄</div>';
+    element.innerHTML = '<div class="empty-tip">暂无账单，可上传账单截图或导入 CSV 📄</div>';
     document.getElementById('billMonthTotal').textContent = '共 ¥0';
     return;
   }
