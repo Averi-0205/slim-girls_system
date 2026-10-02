@@ -253,17 +253,26 @@ body.auth-locked{overflow:hidden}
   <!-- ================= 消费 ================= -->
   <div class="page" id="page-cost">
     <div class="card">
-      <h3>导入饮食账单 <small>截图导入</small></h3>
-      <div class="upload-zone" onclick="document.getElementById('billShot').click()">
-        <span class="big">📷</span>上传记账App / 支付账单截图<br><small style="font-size:11px">识别餐饮消费条目与金额后确认导入</small>
-        <input type="file" id="billShot" accept="image/*" onchange="onBillShot(this)">
-        <img class="preview-img" id="billPreview">
+      <h3>导入饮食账单 <small>截图识别 / CSV</small></h3>
+      <div class="grid2">
+        <div class="upload-zone" style="padding:14px 8px" onclick="document.getElementById('billShot').click()">
+          <span class="big">📷</span>上传账单截图<small style="font-size:10px">AI 识别餐饮消费</small>
+          <input type="file" id="billShot" accept="image/*" onchange="onBillShot(this)">
+        </div>
+        <div class="upload-zone" style="padding:14px 8px" onclick="document.getElementById('billCsv').click()">
+          <span class="big">📄</span>导入 CSV 账单<small style="font-size:10px">支付宝 / 微信导出</small>
+          <input type="file" id="billCsv" accept=".csv,text/csv" onchange="onCsvFile(this)">
+        </div>
       </div>
+      <img class="preview-img" id="billPreview">
       <div id="csvResult" style="display:none;margin-top:12px">
         <div class="ai-msg" id="csvMsg"></div>
-        <div class="btn-row"><button class="btn" onclick="confirmCsv()">✓ 导入餐饮条目</button></div>
+        <div class="btn-row">
+          <button class="btn" onclick="confirmCsv()">✓ 导入餐饮条目</button>
+          <button class="btn secondary" onclick="cancelCsv()">取消</button>
+        </div>
       </div>
-      <p style="font-size:11px;color:var(--text-sub);margin-top:10px">💡 仅本地解析，数据不上传。</p>
+      <p style="font-size:11px;color:var(--text-sub);margin-top:10px">💡 截图识别会把图片发送给 DeepSeek；CSV 解析全部在本机完成，不上传。</p>
     </div>
     <div class="card">
       <h3>本月饮食账单 <small id="billMonthTotal">共 ¥0</small></h3>
