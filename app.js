@@ -416,30 +416,123 @@ function delExe(index) {
   toast('已删除');
 }
 
-function renderFoodOpts(query = '') {
-  const normalized = String(query).trim();
-  const allFoods = FOODS.concat(DB.customFoods.map((item) => [item.name, item.kcal]));
-  const rows = allFoods
-    .map((food, index) => ({ food, index }))
-    .filter(({ food }) => !normalized || food[0].includes(normalized));
+const FOOD_VISUAL = {
+  主食: ['🍚', '#FEF3E2'],
+  肉蛋: ['🍖', '#FDECEC'],
+  豆奶: ['🥛', '#E8EDFF'],
+  蔬菜: ['🥬', '#E5F8EF'],
+  水果: ['🍎', '#FDECEC'],
+  坚果: ['🥜', '#FEF3E2'],
+  油脂: ['🫒', '#FEF3E2'],
+  零食: ['🍪', '#F1F3F9'],
+  饮料: ['🥤', '#E8EDFF'],
+  调味: ['🧂', '#F1F3F9'],
+  外卖: ['🥡', '#FEF3E2'],
+  自定义: ['✨', '#E8EDFF']
+};
 
-  document.getElementById('foodOpts').innerHTML = rows.map(({ food, index }) => `
-    <div class="food-opt" onclick="pickFood(${index})">
-      <b>${escapeHtml(food[0])}</b>
-      <span style="font-size:12px;color:var(--text-sub)">${food[1]} kcal</span>
-    </div>
-  `).join('') || '<div class="empty-tip">未找到食物，可创建自定义食物</div>';
+let currentFoodResults = [];
+let foodSearchTimer = null;
+let foodSearchToken = 0;
+
+function foodVisual(category) {
+  return FOOD_VISUAL[category] || ['🍽️', '#F1F3F9'];
+}
+
+function localFoodMatches(query) {
+  const normalized = String(query || '').trim().toLowerCase();
+  const custom = DB.customFoods.map((item) => ({
+    name: item.name,
+    kcal: item.kcal,
+    unit: '',
+    category: '自定义'
+  }));
+  const builtin = FOODS.map(([name, kcal]) => ({ name, kcal, unit: '', category: '主食' }));
+  const all = custom.concat(builtin);
+  return normalized
+    ? all.filter((item) => item.name.toLowerCase().includes(normalized))
+    : all;
+}
+
+function renderFoodOptions(rows) {
+  currentFoodResults = rows;
+  const box = document.getElementById('foodOpts');
+  if (!box) return;
+  if (!rows.length) {
+    box.innerHTML = '<div class="empty-tip">未找到食物，可在下方创建自定义食物</div>';
+    return;
+  }
+  box.innerHTML = rows.map((item, index) => {
+    const [icon] = foodVisual(item.category);
+    const unit = item.unit ? ` · ${escapeHtml(item.unit)}` : '';
+    return `
+      <div class="food-opt" onclick="pickFood(${index})">
+        <b>${icon} ${escapeHtml(item.name)}</b>
+        <span style="font-size:12px;color:var(--text-sub)">${Math.round(finiteNumber(item.kcal, 0))} kcal${unit}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+async function searchFoods(query) {
+  const keyword = String(query || '').trim();
+  const token = ++foodSearchToken;
+  renderFoodOptions(localFoodMatches(keyword));
+
+  if (!supabaseClient || !currentUser) return;
+
+  try {
+    let request = supabaseClient
+      .from('foods')
+      .select('name,unit,kcal,protein_g,carbs_g,fat_g,category')
+      .limit(keyword ? 40 : 30);
+
+    if (keyword) {
+      const safe = keyword.replace(/[,%()]/g, '');
+      const compact = safe.replace(/\s+/g, '').toLowerCase();
+      const filters = [`name.ilike.%${safe}%`, `alias.ilike.%${safe}%`];
+      if (/^[a-z0-9]+$/.test(compact)) filters.push(`pinyin_compact.ilike.%${compact}%`);
+      request = request.or(filters.join(','));
+    } else {
+      request = request.order('id', { ascending: true });
+    }
+
+    const { data, error } = await request;
+    if (error) throw error;
+    if (token !== foodSearchToken) return;
+
+    const custom = DB.customFoods
+      .filter((item) => !keyword || item.name.toLowerCase().includes(keyword.toLowerCase()))
+      .map((item) => ({ name: item.name, kcal: item.kcal, unit: '', category: '自定义' }));
+    const seen = new Set();
+    const merged = custom.concat(Array.isArray(data) ? data : []).filter((item) => {
+      const key = `${item.name}|${item.unit || ''}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (merged.length) renderFoodOptions(merged);
+  } catch (error) {
+    console.warn('云端食物库查询失败，已回退到内置食物库', error);
+  }
+}
+
+function onFoodSearchInput(value) {
+  clearTimeout(foodSearchTimer);
+  foodSearchTimer = setTimeout(() => searchFoods(value), 200);
 }
 
 function pickFood(index) {
-  const food = FOODS.concat(DB.customFoods.map((item) => [item.name, item.kcal]))[index];
+  const food = currentFoodResults[index];
   if (!food) return;
+  const [icon, bg] = foodVisual(food.category);
+  const kcal = Math.round(finiteNumber(food.kcal, 0));
   DB.food.push({
-    icon: '🍽️',
-    bg: '#F1F3F9',
-    name: food[0],
-    sub: '手动添加',
-    kcal: food[1],
+    icon,
+    bg,
+    name: food.name,
+    sub: food.category === '自定义' ? '自定义食物' : `食物库 · ${food.unit || '100g'}`,
+    kcal,
     cost: Math.max(0, finiteNumber(document.getElementById('foodCost')?.value, 0)),
     date: todayKey()
   });
@@ -447,7 +540,7 @@ function pickFood(index) {
   renderFood();
   renderDashboard();
   closeAll();
-  toast(`已记录：${food[0]} ${food[1]} kcal ✓`);
+  toast(`已记录：${food.name} ${kcal} kcal ✓`);
 }
 
 function addCustomFood() {
@@ -472,7 +565,7 @@ function addCustomFood() {
   });
   saveDB();
   renderFood();
-  renderFoodOpts('');
+  searchFoods('');
   renderDashboard();
   closeAll();
   toast(`自定义食物已保存并记录：${label} ✓`);
@@ -1351,7 +1444,6 @@ function renderAll() {
   renderHabits();
   renderWater();
   renderDashboard();
-  renderFoodOpts();
   renderMS();
   renderProfile();
   renderBodyMetrics();
@@ -1368,6 +1460,11 @@ function go(page, button) {
 
 function openModal(id) {
   document.getElementById(id).classList.add('show');
+  if (id === 'modal-food') {
+    const search = document.getElementById('foodSearch');
+    if (search) search.value = '';
+    searchFoods('');
+  }
 }
 
 function closeAll() {
