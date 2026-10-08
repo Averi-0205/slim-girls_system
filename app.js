@@ -44,7 +44,6 @@ let syncTimer = null;
 let syncBusy = false;
 let syncAgain = false;
 let toastTimer = null;
-let pendingBills = [];
 let pendingFoodAI = null;
 let currentCostPeriod = 'w';
 
@@ -1090,254 +1089,11 @@ function addMilestone() {
   toast('里程碑已创建并同步 🏆');
 }
 
-function splitCsvLine(line) {
-  const cells = [];
-  let current = '';
-  let quoted = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    if (quoted) {
-      if (char === '"') {
-        if (line[index + 1] === '"') {
-          current += '"';
-          index += 1;
-        } else {
-          quoted = false;
-        }
-      } else {
-        current += char;
-      }
-    } else if (char === '"') {
-      quoted = true;
-    } else if (char === ',') {
-      cells.push(current.trim());
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  cells.push(current.trim());
-  return cells;
-}
-
-function parseCsv(text) {
-  const lines = String(text || '')
-    .replace(/^\uFEFF/, '')
-    .split(/\r?\n/)
-    .filter((line) => line.trim());
-  if (!lines.length) return null;
-
-  // 真实导出的账单前面有若干行说明文字，需要先定位真正的表头
-  let headerIndex = -1;
-  let kind = '';
-  for (let index = 0; index < Math.min(lines.length, 40); index += 1) {
-    const line = lines[index];
-    if (line.includes('交易分类')) {
-      headerIndex = index;
-      kind = 'alipay';
-      break;
-    }
-    if (line.includes('收/支') && line.includes('商品')) {
-      headerIndex = index;
-      kind = 'wechat';
-      break;
-    }
-  }
-  if (headerIndex < 0) return null;
-
-  const header = splitCsvLine(lines[headerIndex]);
-  const column = (...names) => {
-    for (const name of names) {
-      const index = header.findIndex((cell) => cell.includes(name));
-      if (index >= 0) return index;
-    }
-    return -1;
-  };
-
-  const timeIdx = column('交易时间', '交易创建时间', '时间');
-  const itemIdx = column('商品说明', '商品', '交易对方');
-  const amountIdx = column('金额');
-  const directionIdx = column('收/支');
-  const statusIdx = column('交易状态', '当前状态');
-  const categoryIdx = kind === 'alipay' ? column('交易分类') : -1;
-  const todayShort = todayKey().slice(5);
-
-  const rows = [];
-  for (const line of lines.slice(headerIndex + 1)) {
-    const cells = splitCsvLine(line);
-    const pick = (index) => (index >= 0 ? String(cells[index] || '').trim() : '');
-
-    const direction = pick(directionIdx);
-    if (direction && direction !== '支出') continue;
-
-    const status = pick(statusIdx);
-    if (status.includes('退款')) continue;
-    if (kind === 'wechat' && status && !status.includes('支付成功')) continue;
-
-    const category = pick(categoryIdx);
-    if (kind === 'alipay' && category && !/餐饮|美食|食品/.test(category)) continue;
-
-    const name = pick(itemIdx);
-    if (kind === 'wechat' && name && !/餐|饭|面|粉|奶茶|咖啡|小吃|超市|便利|菜|肉|水果|外卖|零食|饮/.test(name)) continue;
-
-    const amount = parseFloat(pick(amountIdx).replace(/[¥￥,\s]/g, ''));
-    if (!Number.isFinite(amount) || amount <= 0) continue;
-
-    const rawTime = pick(timeIdx);
-    const full = rawTime.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-    const short = rawTime.match(/(\d{1,2})[-/](\d{1,2})/);
-    const date = full
-      ? `${full[2].padStart(2, '0')}-${full[3].padStart(2, '0')}`
-      : short
-        ? `${short[1].padStart(2, '0')}-${short[2].padStart(2, '0')}`
-        : todayShort;
-
-    rows.push({ date, name: name || '餐饮消费', kcost: amount, src: 'CSV' });
-  }
-  return rows;
-}
-
-function showBillResult(html) {
-  const box = document.getElementById('csvResult');
-  if (box) box.style.display = 'block';
-  const message = document.getElementById('csvMsg');
-  if (message) message.innerHTML = html;
-}
-
-function resetBillInputs() {
-  ['billShot', 'billCsv'].forEach((id) => {
-    const input = document.getElementById(id);
-    if (input) input.value = '';
-  });
-}
-
-function describeBillRows(rows) {
-  const total = rows.reduce((sum, item) => sum + finiteNumber(item.kcost, 0), 0);
-  return `共 <b>${rows.length}</b> 条餐饮消费，合计 <b>¥${total.toFixed(2)}</b><br>
-    <span style="font-size:11px;opacity:.7">${rows.slice(0, 6).map((item) => `${escapeHtml(item.date)} ${escapeHtml(item.name)} ¥${finiteNumber(item.kcost, 0).toFixed(1)}`).join('；')}${rows.length > 6 ? ' …' : ''}</span>`;
-}
-
-function onCsvFile(input) {
-  const file = input.files[0];
-  if (!file) return;
-  pendingBills = [];
-  showBillResult('正在读取账单文件…');
-
-  const reader = new FileReader();
-  reader.onerror = () => {
-    showBillResult('⚠️ 文件读取失败，请重新选择。');
-    resetBillInputs();
-  };
-  reader.onload = (event) => {
-    const buffer = event.target.result;
-    let text = '';
-    let encoding = 'UTF-8';
-    try {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
-    } catch {
-      encoding = 'GBK';
-      try {
-        text = new TextDecoder('gbk').decode(buffer);
-      } catch {
-        text = new TextDecoder('utf-8').decode(buffer);
-        encoding = 'UTF-8(替换字符)';
-      }
-    }
-
-    const rows = parseCsv(text);
-    if (!rows || !rows.length) {
-      showBillResult(`⚠️ 未识别出餐饮条目（编码 ${encoding}）。请使用支付宝「账单导出」或微信「账单下载-用于个人对账」生成的 CSV 文件，不要改动表头。`);
-      resetBillInputs();
-      return;
-    }
-
-    pendingBills = rows;
-    showBillResult(`✅ CSV 解析成功（编码 ${encoding}）：${describeBillRows(rows)}<br><span style="font-size:11px;opacity:.7">核对无误后点下方按钮导入。</span>`);
-    resetBillInputs();
-  };
-  reader.readAsArrayBuffer(file);
-}
-
-async function onBillShot(input) {
-  const file = input.files[0];
-  if (!file) return;
-  const preview = document.getElementById('billPreview');
-  pendingBills = [];
-  showBillResult('DeepSeek 正在识别账单截图，请稍候…');
-
-  try {
-    const previewUrl = await readFileAsDataUrl(file);
-    if (preview) {
-      preview.src = previewUrl;
-      preview.style.display = 'block';
-    }
-
-    const imageDataUrl = await compressImageForAI(file);
-    const result = await callDeepSeekAnalyze('bill-image', { imageDataUrl });
-
-    let parsed = null;
-    try {
-      parsed = JSON.parse(String(result.text).replace(/^```json\s*|\s*```$/g, '').trim());
-    } catch {
-      parsed = null;
-    }
-
-    const rows = (Array.isArray(parsed?.items) ? parsed.items : [])
-      .map((item) => ({
-        date: String(item?.date || '').trim(),
-        name: String(item?.name || '餐饮消费').trim(),
-        kcost: Math.max(0, finiteNumber(item?.amount, 0)),
-        src: '截图识别'
-      }))
-      .filter((item) => item.kcost > 0);
-
-    if (!rows.length) {
-      showBillResult(`⚠️ 没有识别出餐饮消费条目。${escapeHtml(parsed?.description || '可以换一张更清晰的账单截图，或改用 CSV 导入。')}`);
-      return;
-    }
-
-    pendingBills = rows;
-    showBillResult(`🔍 截图识别结果：${describeBillRows(rows)}<br><span style="font-size:11px;opacity:.7">AI 识别可能有误差，请核对后再导入。</span>`);
-  } catch (error) {
-    console.error('Bill screenshot recognition failed', error);
-    pendingBills = [];
-    showBillResult(`⚠️ 识别失败：${escapeHtml(error.message)}<br><span style="font-size:11px;opacity:.7">可以改用「导入 CSV 账单」。</span>`);
-    toast(`账单识别失败：${error.message}`);
-  } finally {
-    resetBillInputs();
-  }
-}
-
-function confirmCsv() {
-  if (!pendingBills.length) {
-    toast('没有可导入的条目');
-    return;
-  }
-  const count = pendingBills.length;
-  DB.bills = DB.bills.concat(pendingBills);
-  pendingBills = [];
-  saveDB();
-  renderBills();
-  drawDual();
-  document.getElementById('csvResult').style.display = 'none';
-  toast(`已导入 ${count} 条餐饮消费 ✓`);
-}
-
-function cancelCsv() {
-  pendingBills = [];
-  const box = document.getElementById('csvResult');
-  if (box) box.style.display = 'none';
-  const preview = document.getElementById('billPreview');
-  if (preview) preview.style.display = 'none';
-  resetBillInputs();
-  toast('已取消导入');
-}
-
 function renderBills() {
   const element = document.getElementById('billList');
   if (!element) return;
   if (!DB.bills.length) {
-    element.innerHTML = '<div class="empty-tip">暂无账单，可上传账单截图或导入 CSV 📄</div>';
+    element.innerHTML = '<div class="empty-tip">暂无餐饮消费记录 📄</div>';
     document.getElementById('billMonthTotal').textContent = '共 ¥0';
     return;
   }
@@ -1492,8 +1248,11 @@ function drawDual() {
   if (!chart) return;
   const data = buildCostData(currentCostPeriod);
   const width = 360;
-  const height = 130;
-  const padding = 8;
+  const height = 160;
+  const padX = 24;
+  const padTop = 12;
+  const padBottom = 30;
+  const plotBottom = height - padBottom;
   const validWeights = data.weights.filter(Number.isFinite);
 
   if (!validWeights.length && data.totalCost === 0) {
@@ -1507,27 +1266,30 @@ function drawDual() {
 
   const weightMin = validWeights.length ? Math.min(...validWeights) - 0.2 : 0;
   const weightMax = validWeights.length ? Math.max(...validWeights) + 0.2 : 1;
+  const weightSpan = (weightMax - weightMin) || 1;
   const costMax = Math.max(...data.costs, 1);
-  const x = (index) => padding + (index * (width - (2 * padding))) / (data.labels.length - 1);
-  const yWeight = (value) => height - ((value - weightMin) / (weightMax - weightMin)) * (height - 24) - 8;
-  const barWidth = Math.min(26, ((width - (2 * padding)) / data.labels.length) * 0.5);
+  const plotHeight = plotBottom - padTop;
+  const step = data.labels.length > 1 ? (width - (padX * 2)) / (data.labels.length - 1) : 0;
+  const x = (index) => padX + (index * step);
+  const yWeight = (value) => plotBottom - ((value - weightMin) / weightSpan) * plotHeight;
+  const barWidth = Math.max(6, Math.min(26, (step || 40) * 0.55));
 
   let bars = '';
   data.costs.forEach((cost, index) => {
     if (cost <= 0) return;
-    const barHeight = Math.max(3, (cost / costMax) * (height - 24));
-    bars += `<rect x="${x(index) - barWidth / 2}" y="${height - barHeight - 8}" width="${barWidth}" height="${barHeight}" rx="3" fill="#FFD37E" opacity=".85"/>`;
+    const barHeight = Math.max(3, (cost / costMax) * plotHeight);
+    bars += `<rect x="${x(index) - barWidth / 2}" y="${plotBottom - barHeight}" width="${barWidth}" height="${barHeight}" rx="3" fill="#FFD37E" opacity=".85"/>`;
   });
 
   const points = data.weights
     .map((value, index) => Number.isFinite(value) ? `${x(index)},${yWeight(value)}` : null)
     .filter(Boolean);
-  chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
-    <line x1="${padding}" y1="${height - 8}" x2="${width - padding}" y2="${height - 8}" stroke="#E5E8F0"/>
+  chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="体重与饮食消费趋势图">
+    <line x1="${padX}" y1="${plotBottom}" x2="${width - padX}" y2="${plotBottom}" stroke="#E5E8F0"/>
     ${bars}
     ${points.length > 1 ? `<polyline points="${points.join(' ')}" fill="none" stroke="#4F6DF5" stroke-width="2.5" stroke-linecap="round"/>` : ''}
     ${data.weights.map((value, index) => Number.isFinite(value) ? `<circle cx="${x(index)}" cy="${yWeight(value)}" r="3.5" fill="#4F6DF5"/>` : '').join('')}
-    ${data.labels.map((label, index) => `<text x="${x(index)}" y="${height + 4}" font-size="9" fill="#8A91A3" text-anchor="middle">${label}</text>`).join('')}
+    ${data.labels.map((label, index) => `<text x="${x(index)}" y="${height - 9}" font-size="10" fill="#8A91A3" text-anchor="middle">${label}</text>`).join('')}
   </svg>`;
 
   document.getElementById('stW').textContent = data.weightChange === null
