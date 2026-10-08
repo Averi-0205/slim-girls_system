@@ -253,33 +253,11 @@ body.auth-locked{overflow:hidden}
   <!-- ================= 消费 ================= -->
   <div class="page" id="page-cost">
     <div class="card">
-      <h3>导入饮食账单 <small>截图识别 / CSV</small></h3>
-      <div class="grid2">
-        <div class="upload-zone" style="padding:14px 8px" onclick="document.getElementById('billShot').click()">
-          <span class="big">📷</span>上传账单截图<small style="font-size:10px">AI 识别餐饮消费</small>
-          <input type="file" id="billShot" accept="image/*" onchange="onBillShot(this)">
-        </div>
-        <div class="upload-zone" style="padding:14px 8px" onclick="document.getElementById('billCsv').click()">
-          <span class="big">📄</span>导入 CSV 账单<small style="font-size:10px">支付宝 / 微信导出</small>
-          <input type="file" id="billCsv" accept=".csv,text/csv" onchange="onCsvFile(this)">
-        </div>
-      </div>
-      <img class="preview-img" id="billPreview">
-      <div id="csvResult" style="display:none;margin-top:12px">
-        <div class="ai-msg" id="csvMsg"></div>
-        <div class="btn-row">
-          <button class="btn" onclick="confirmCsv()">✓ 导入餐饮条目</button>
-          <button class="btn secondary" onclick="cancelCsv()">取消</button>
-        </div>
-      </div>
-      <p style="font-size:11px;color:var(--text-sub);margin-top:10px">💡 截图识别会把图片发送给 DeepSeek；CSV 解析全部在本机完成，不上传。</p>
-    </div>
-    <div class="card">
       <h3>本月饮食账单 <small id="billMonthTotal">共 ¥0</small></h3>
       <div id="billList"></div>
     </div>
     <div class="card">
-      <h3>体重 × 饮食消费 <span class="tag orange">示例</span>
+      <h3>体重 × 饮食消费
         <small><span class="quick" id="periodSel" style="display:inline-flex;gap:6px">
           <span class="on" onclick="setPeriod(this,'w')">周</span><span onclick="setPeriod(this,'m')">月</span><span onclick="setPeriod(this,'q')">季</span>
         </span></small>
@@ -295,12 +273,6 @@ body.auth-locked{overflow:hidden}
     <div class="card">
       <h3>体重 × 消费分析 <small><span id="aiCostStatus">基于当前记录</span> <button class="btn ghost small" id="costAiBtn" onclick="generateCostAI()">重新分析</button></small></h3>
       <div class="ai-msg" id="aiCost"></div>
-    </div>
-    <div class="card">
-      <h3>消费结构分析 <span class="tag orange">示例</span></h3>
-      <div class="item"><div class="icon" style="background:#E5F8EF">🍳</div><div class="info"><b>自己做饭</b><div class="progress green"><i style="width:26%"></i></div></div><div class="right">¥210<span>/周 · 减重更快</span></div></div>
-      <div class="item"><div class="icon" style="background:#FEF3E2">🥡</div><div class="info"><b>外卖外食</b><div class="progress orange"><i style="width:72%"></i></div></div><div class="right">¥580<span>/周 · 体重易反弹</span></div></div>
-      <div class="item" style="border:none"><div class="icon" style="background:#FDECEC">🧋</div><div class="info"><b>奶茶甜品</b><div class="progress"><i style="width:14%;background:var(--red)"></i></div></div><div class="right">¥180<span>/月 · 月增约2400kcal</span></div></div>
     </div>
   </div>
 
